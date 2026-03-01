@@ -5,10 +5,16 @@
 	import FolderPicker from '$lib/FolderPicker.svelte';
 	import Terminal from '$lib/Terminal.svelte';
 	import Chat, { type ChatMessage, type ChatThread } from '$lib/Chat.svelte';
+	import CommandPalette from '$lib/CommandPalette.svelte';
+	import SettingsModal from '$lib/SettingsModal.svelte';
+	import FindInFilesPanel, { type SearchMatch } from '$lib/FindInFilesPanel.svelte';
+	import ExtensionsPanel, { type StoreEntry } from '$lib/ExtensionsPanel.svelte';
+	import McpPanel from '$lib/McpPanel.svelte';
 	import { marked } from 'marked';
 
 	import { type EditorExtensionKey } from '$lib/useCodeMirror';
 	import type { ExtensionManifest } from '$lib/extensions';
+	import { type AppSettings, type PaletteCommand, DEFAULT_SETTINGS, loadSettings, SETTINGS_KEY } from '$lib/types';
 
 	interface Tab { path: string; name: string; content: string; dirty: boolean; }
 	type StatusKind = 'idle' | 'info' | 'success' | 'error';
@@ -18,36 +24,7 @@
 	const AUTOSAVE_KEY = 'nixium-autosave';
 	const TERM_TAB     = '__terminal__';
 	const CHAT_TAB     = '__chat__';
-	const SETTINGS_KEY = 'nixium-settings';
 	const MAX_RECENT   = 8;
-
-	interface AppSettings {
-		ai: { provider: string; apiKey: string; model: string; baseUrl: string; };
-		/** CodeMirror built-in feature toggles. */
-		nixiumOptions: Record<EditorExtensionKey, boolean>;
-		/** Which external extension names are enabled (keyed by directory name). */
-		extensions: Record<string, boolean>;
-	}
-	const DEFAULT_NIXIUM_OPTIONS: AppSettings['nixiumOptions'] = {
-		wordWrap: false, lineNumbers: true, foldGutter: true,
-		autoBrackets: true, highlightActiveLine: true, autocompletion: true,
-	};
-	const DEFAULT_SETTINGS: AppSettings = {
-		ai: { provider: 'openai', apiKey: '', model: 'gpt-4o-mini', baseUrl: '' },
-		nixiumOptions: { ...DEFAULT_NIXIUM_OPTIONS },
-		extensions: {},
-	};
-	function loadSettings(): AppSettings {
-		try {
-			const raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') as Partial<AppSettings>;
-			return {
-				...DEFAULT_SETTINGS, ...raw,
-				ai: { ...DEFAULT_SETTINGS.ai, ...(raw.ai ?? {}) },
-				nixiumOptions: { ...DEFAULT_NIXIUM_OPTIONS, ...(raw.nixiumOptions ?? {}) },
-				extensions: { ...(raw.extensions ?? {}) },
-			};
-		} catch { return DEFAULT_SETTINGS; }
-	}
 
 	function loadRecent(): string[] {
 		try { return JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]'); } catch { return []; }
@@ -101,38 +78,13 @@
 	let extCommands  = $state<PaletteCommand[]>([]);
 	const extHandles = new Map<string, () => void | Promise<void>>();
 	let notification = $state<{ msg: string; type: 'info' | 'error'; id: number } | null>(null);
+	let installingExt = $state<string | null>(null);
+	let removingExt   = $state<string | null>(null);
 
 	// ── Extension store ───────────────────────────────────────────────────────
-	interface StoreEntry {
-		name: string; displayName: string; version: string;
-		description: string; author?: string; download_url: string;
-		readme_url?: string;
-	}
-	let extTab        = $state<'installed' | 'store'>('installed');
-	let storeQuery    = $state('');
-	// storeRegistry holds raw remote data — never modified by install/uninstall.
-		let storeRegistry = $state<StoreEntry[]>([]);
-		const storeResults = $derived.by(() => {
-			// storeRegistry is the single source — seeded from installed + remote.
-			const q = storeQuery.trim().toLowerCase();
-			if (!q) return storeRegistry;
-			return storeRegistry.filter(e =>
-				e.name.toLowerCase().includes(q) ||
-				e.displayName.toLowerCase().includes(q) ||
-				(e.description?.toLowerCase().includes(q) ?? false) ||
-				(e.author?.toLowerCase().includes(q) ?? false)
-			);
-		});
-	let storeLoading  = $state(false);
-	let storeError    = $state('');
-	let installingExt    = $state<string | null>(null);
-	let removingExt      = $state<string | null>(null);
-
-	// ── Extension detail view ──────────────────────────────────────────────
 	let extDetailName          = $state<string | null>(null);
 	let extDetailReadmeHtml    = $state<string>('');
 	let extDetailReadmeLoading = $state(false);
-	// Preserved store entry so we can reinstall after uninstalling from detail.
 	let extDetailStoreEntry    = $state<StoreEntry | null>(null);
 
 	// ── MCP Skills panel ─────────────────────────────────────────────────────
@@ -195,97 +147,12 @@
 		menuOpen   = false;
 		if (mcpTools.length === 0) fetchMcpTools();
 	}
-	// ── Nixium option items — shown in the Settings modal ───────────────────
-	const NIXIUM_OPTION_ITEMS: Array<{ key: EditorExtensionKey; label: string; desc: string }> = [
-		{ key: 'wordWrap',            label: 'Word Wrap',             desc: 'Wrap long lines instead of scrolling' },
-		{ key: 'lineNumbers',         label: 'Line Numbers',          desc: 'Show line numbers in the gutter' },
-		{ key: 'foldGutter',          label: 'Code Folding',          desc: 'Collapsible fold markers in the gutter' },
-		{ key: 'autoBrackets',        label: 'Auto Close Brackets',   desc: 'Automatically insert closing brackets and quotes' },
-		{ key: 'highlightActiveLine', label: 'Highlight Active Line', desc: 'Highlight the line the cursor is on' },
-		{ key: 'autocompletion',      label: 'Autocompletion',        desc: 'Suggest completions while typing (Ctrl+Space)' },
-	];
 
 	// ── Find in Files ─────────────────────────────────────────────────────────
-	interface SearchMatch { path: string; line: number; col: number; text: string; }
-	let fifOpen          = $state(false);
-	let fifQuery         = $state('');
-	let fifCaseSensitive = $state(false);
-	let fifLoading       = $state(false);
-	let fifResults       = $state<SearchMatch[]>([]);
-	let fifError         = $state('');
-	const fifFileGroups  = $derived(
-		[...new Map(
-			fifResults.reduce((m, r) => {
-				if (!m.has(r.path)) m.set(r.path, []);
-				m.get(r.path)!.push(r);
-				return m;
-			}, new Map<string, SearchMatch[]>())
-		).entries()]
-	);
+	let fifOpen = $state(false);
 
 	// ── Command Palette ───────────────────────────────────────────────────────
-	interface PaletteCommand {
-		id: string;
-		label: string;
-		description?: string;
-		keybinding?: string;
-		action: () => void;
-	}
-	let paletteOpen        = $state(false);
-	let paletteQuery       = $state('');
-	let paletteSelectedIdx = $state(0);
-	let paletteInputEl     = $state<HTMLInputElement | null>(null);
-
-	function _paletteMatch(label: string, q: string): boolean {
-		if (!q) return true;
-		let i = 0;
-		const l = label.toLowerCase();
-		for (const ch of q) { const pos = l.indexOf(ch, i); if (pos === -1) return false; i = pos + 1; }
-		return true;
-	}
-
-	function openPalette() {
-		paletteQuery = '';
-		paletteSelectedIdx = 0;
-		paletteOpen = true;
-		tick().then(() => paletteInputEl?.focus());
-	}
-
-	function closePalette() { paletteOpen = false; }
-
-	function runPaletteCommand(cmd: PaletteCommand) {
-		closePalette();
-		cmd.action();
-	}
-
-	function paletteKeydown(e: KeyboardEvent) {
-		const items = paletteFiltered();
-		if (e.key === 'ArrowDown') {
-			e.preventDefault();
-			paletteSelectedIdx = Math.min(paletteSelectedIdx + 1, items.length - 1);
-		} else if (e.key === 'ArrowUp') {
-			e.preventDefault();
-			paletteSelectedIdx = Math.max(paletteSelectedIdx - 1, 0);
-		} else if (e.key === 'Enter') {
-			e.preventDefault();
-			const cmd = items[paletteSelectedIdx];
-			if (cmd) runPaletteCommand(cmd);
-		} else if (e.key === 'Escape') {
-			e.preventDefault();
-			closePalette();
-		}
-	}
-
-	$effect(() => {
-		// Reset selection when query changes
-		// eslint-disable-next-line @typescript-eslint/no-unused-expressions
-		paletteQuery;
-		paletteSelectedIdx = 0;
-	});
-
-	$effect(() => {
-		if (paletteOpen) tick().then(() => paletteInputEl?.focus());
-	});
+	let paletteOpen = $state(false);
 
 	const activeTab  = $derived(tabs.find((t) => t.path === activeTabPath) ?? null);
 	const isTermTab  = $derived(terminalMode === 'tab' && activeTabPath === TERM_TAB);
@@ -321,19 +188,6 @@
 		...extCommands,
 	] as PaletteCommand[]);
 
-	const paletteFiltered = $derived((): PaletteCommand[] => {
-		const q = paletteQuery.trim().toLowerCase();
-		// ":42" → Go to Line
-		if (q.startsWith(':')) {
-			const n = parseInt(q.slice(1), 10);
-			if (!isNaN(n) && n > 0 && activeTab && activeTabPath !== TERM_TAB && activeTabPath !== CHAT_TAB) {
-				return [{ id: 'gotoline', label: `Go to Line ${n}`, description: `Jump to line ${n} in current file`, action: () => { nixium.jumpToLine(n, 0); } }];
-			}
-			return [];
-		}
-		return paletteCommands.filter(c => _paletteMatch(c.label, q));
-	});
-
 	// Persist preferences
 	$effect(() => { localStorage.setItem(AUTOSAVE_KEY, autosave ? '1' : '0'); });
 	$effect(() => { localStorage.setItem('nixium-statusbar', statusBarVisible ? '1' : '0'); });
@@ -353,7 +207,7 @@
 			else if (extHandles.has(ext.name)) { unloadExtension(ext.name); }
 		}
 	});
-	// Filtering is handled by the $derived storeResults — no debounce effect needed.
+	// Filtering is handled by ExtensionsPanel internally.
 	// Auto-fetch Ollama models when chat becomes visible with Ollama provider
 	$effect(() => {
 		if (chatVisible && settings.ai.provider === 'ollama' && ollamaModels.length === 0) {
@@ -413,15 +267,7 @@
 		try {
 			const res = await fetch('/api/extensions');
 			if (res.ok) {
-				const fetched: import('$lib/extensions').ExtensionManifest[] = await res.json();
-				extList = fetched;
-				// Seed storeRegistry with any installed extension not already there.
-				// These entries are permanent — uninstall does NOT remove them.
-				const known = new Set(storeRegistry.map((e: StoreEntry) => e.name));
-				const newEntries: StoreEntry[] = fetched
-					.filter(e => !known.has(e.name))
-					.map(e => ({ name: e.name, displayName: e.displayName, version: e.version, description: e.description, download_url: '' }));
-				if (newEntries.length) storeRegistry = [...storeRegistry, ...newEntries];
+				extList = await res.json();
 			}
 		} catch { /* ignore */ }
 	}
@@ -434,16 +280,12 @@
 
 	async function openExtDetail(name: string) {
 		extDetailName = name;
-		// Preserve a StoreEntry so the Install button can appear after uninstall.
-		const fromStore = storeResults.find(e => e.name === name);
-		if (fromStore) {
-			extDetailStoreEntry = fromStore;
-		} else {
-			const installed = extList.find(e => e.name === name);
-			extDetailStoreEntry = installed
+		const installed = extList.find(e => e.name === name);
+		extDetailStoreEntry = extDetailStoreEntry?.name === name
+			? extDetailStoreEntry
+			: installed
 				? { name: installed.name, displayName: installed.displayName, version: installed.version, description: installed.description, download_url: '' }
 				: null;
-		}
 		extDetailReadmeHtml = '';
 		extDetailReadmeLoading = true;
 		try {
@@ -479,22 +321,6 @@
 		extDetailName = null;
 		extDetailReadmeHtml = '';
 		extDetailStoreEntry = null;
-	}
-
-	async function searchStore() {
-		storeLoading = true; storeError = '';
-		try {
-			const res = await fetch('/api/extensions/store/search?q=');
-			if (res.ok) {
-				const remote: StoreEntry[] = await res.json();
-				// Merge remote into registry: update existing entries by name,
-				// add new ones — but NEVER remove entries already in the registry.
-				const updated = new Map(storeRegistry.map(e => [e.name, e]));
-				for (const e of remote) updated.set(e.name, e);
-				storeRegistry = [...updated.values()];
-			} else storeError = `Store unavailable (${res.status})`;
-		} catch (e) { storeError = (e as Error).message; }
-		finally { storeLoading = false; }
 	}
 
 	async function installExtension(entry: StoreEntry) {
@@ -709,27 +535,6 @@
 		mcpOpen = false;
 		sidebarVisible = true;
 		fetchExtensions();
-		if (storeRegistry.length === 0 && !storeLoading) searchStore();
-	}
-
-	async function runFindInFiles() {
-		if (!fifQuery.trim()) { fifResults = []; return; }
-		fifLoading = true;
-		fifError = '';
-		try {
-			const url = `/api/fs/search?path=${encodeURIComponent(rootPath)}&query=${encodeURIComponent(fifQuery)}&caseSensitive=${fifCaseSensitive}`;
-			const res = await fetch(url);
-			if (!res.ok) {
-				const body = await res.json().catch(() => ({ error: res.statusText }));
-				throw new Error((body as { error?: string }).error ?? res.statusText);
-			}
-			fifResults = await res.json() as SearchMatch[];
-		} catch (err) {
-			fifError = (err as Error).message;
-			fifResults = [];
-		} finally {
-			fifLoading = false;
-		}
 	}
 
 	async function jumpToSearchResult(match: SearchMatch) {
@@ -1377,7 +1182,7 @@ RULES:
 		// Ctrl+Shift+M – MCP Skills
 		if (mod && e.shiftKey && e.key === 'M') { e.preventDefault(); mcpOpen ? (mcpOpen = false) : openMcp(); }
 		// Ctrl+Shift+P – Command Palette
-		if (mod && e.shiftKey && e.key === 'P') { e.preventDefault(); paletteOpen ? closePalette() : openPalette(); }
+		if (mod && e.shiftKey && e.key === 'P') { e.preventDefault(); paletteOpen = !paletteOpen; }
 		if (e.key === 'Escape') {
 			if (paletteOpen) { paletteOpen = false; }
 			else if (settingsOpen) { settingsOpen = false; }
@@ -1414,121 +1219,26 @@ RULES:
 {/if}
 
 {#if paletteOpen}
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="palette-backdrop" role="presentation" onmousedown={closePalette}>
-	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-	<div class="palette" role="dialog" tabindex="-1" onmousedown={(e) => e.stopPropagation()}>
-		<div class="palette-search">
-			<span class="palette-icon">⌘</span>
-			<input
-				class="palette-input"
-				placeholder="Type a command or ':42' to go to line…"
-				bind:value={paletteQuery}
-				bind:this={paletteInputEl}
-				onkeydown={paletteKeydown}
-				autocomplete="off"
-				spellcheck={false}
-			/>
-		</div>
-		{#if paletteFiltered().length > 0}
-			<ul class="palette-list" role="listbox">
-				{#each paletteFiltered() as cmd, i}
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
-					<li
-						role="option"
-						aria-selected={i === paletteSelectedIdx}
-						class="palette-item"
-						class:palette-item-active={i === paletteSelectedIdx}
-						onmouseenter={() => (paletteSelectedIdx = i)}
-						onclick={() => runPaletteCommand(cmd)}
-					>
-						<span class="palette-label">{cmd.label}</span>
-						{#if cmd.description}<span class="palette-desc">{cmd.description}</span>{/if}
-						{#if cmd.keybinding}<span class="palette-kbd">{cmd.keybinding}</span>{/if}
-					</li>
-				{/each}
-			</ul>
-		{:else}
-			<div class="palette-empty">No matching commands</div>
-		{/if}
-	</div>
-</div>
+<CommandPalette
+	commands={paletteCommands}
+	onrun={() => (paletteOpen = false)}
+	onclose={() => (paletteOpen = false)}
+	onjumpline={(n) => nixium.jumpToLine(n, 0)}
+/>
 {/if}
 
 <div class="shell" class:dragging={isDragging || isTermDragging || isChatDragging}>
 
 {#if settingsOpen}
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="modal-backdrop" role="presentation" onmousedown={() => (settingsOpen = false)}>
-	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-	<div class="modal" role="dialog" tabindex="-1" onmousedown={(e) => e.stopPropagation()}>
-		<div class="modal-title">⚙ Settings</div>
-		<div class="settings-section">
-			<div class="settings-heading">AI</div>
-			<label class="modal-label">Provider
-				<select bind:value={settingsDraft.ai.provider} class="modal-input"
-					onchange={() => { if (settingsDraft.ai.provider === 'ollama') { ollamaModels = []; fetchOllamaModels(); } else { ollamaModels = []; } }}>
-					<option value="openai">OpenAI</option>
-					<option value="anthropic">Anthropic</option>
-					<option value="ollama">Ollama (local)</option>
-					<option value="custom">Custom (OpenAI-compatible)</option>
-				</select>
-			</label>
-			<label class="modal-label">API Key
-				<input type="password" bind:value={settingsDraft.ai.apiKey} class="modal-input modal-mono" placeholder={settingsDraft.ai.provider === 'ollama' ? 'Not required' : 'sk-…'} />
-			</label>
-			<label class="modal-label">Model
-				{#if settingsDraft.ai.provider === 'ollama'}
-					<div class="ollama-model-row">
-						{#if ollamaModels.length > 0}
-							<select bind:value={settingsDraft.ai.model} class="modal-input modal-mono">
-								{#each ollamaModels as m}
-									<option value={m}>{m}</option>
-								{/each}
-								{#if settingsDraft.ai.model && !ollamaModels.includes(settingsDraft.ai.model)}
-									<option value={settingsDraft.ai.model}>{settingsDraft.ai.model}</option>
-								{/if}
-							</select>
-						{:else}
-							<input type="text" bind:value={settingsDraft.ai.model} class="modal-input modal-mono" placeholder="llama3.2" />
-						{/if}
-						<button class="modal-btn fetch-btn" onclick={() => fetchOllamaModels()} disabled={ollamaModelsLoading} title="Fetch models from Ollama">
-							{ollamaModelsLoading ? '…' : '↻'}
-						</button>
-					</div>
-					{#if ollamaModelsError}<span class="fetch-error">{ollamaModelsError}</span>{/if}
-				{:else}
-					<input type="text" bind:value={settingsDraft.ai.model} class="modal-input modal-mono"
-						placeholder={settingsDraft.ai.provider === 'anthropic' ? 'claude-3-5-sonnet-20241022' : 'gpt-4o-mini'} />
-				{/if}
-			</label>
-			{#if settingsDraft.ai.provider === 'ollama' || settingsDraft.ai.provider === 'custom'}
-			<label class="modal-label">Base URL
-				<input type="text" bind:value={settingsDraft.ai.baseUrl} class="modal-input modal-mono"
-					placeholder={settingsDraft.ai.provider === 'ollama' ? 'http://localhost:11434' : 'https://api.example.com'} />
-			</label>
-			{/if}
-		</div>
-		<div class="settings-section">
-			<div class="settings-heading">Editor</div>
-			{#each EDITOR_OPTION_ITEMS as item}
-				<label class="modal-label modal-label-row">
-					<span class="modal-label-name">{item.label}</span>
-					<span class="modal-label-desc">{item.desc}</span>
-					<input
-						type="checkbox"
-						checked={settingsDraft.nixiumOptions[item.key]}
-						onchange={(e) => { settingsDraft.nixiumOptions = { ...settingsDraft.nixiumOptions, [item.key]: (e.target as HTMLInputElement).checked }; }}
-					/>
-				</label>
-			{/each}
-		</div>
-		<div class="modal-actions">
-			<button class="modal-btn" onclick={() => (settingsOpen = false)}>Cancel</button>
-			<button class="modal-btn primary" onclick={saveSettings}>Save</button>
-		</div>
-	</div>
-</div>
+<SettingsModal
+	bind:draft={settingsDraft}
+	{ollamaModels}
+	{ollamaModelsLoading}
+	{ollamaModelsError}
+	onsave={saveSettings}
+	oncancel={() => (settingsOpen = false)}
+	onfetchollama={fetchOllamaModels}
+/>
 {/if}
 
 {#if saveAsOpen}
@@ -1731,161 +1441,28 @@ RULES:
 
 		<aside class="sidebar" class:sidebar-hidden={!sidebarVisible} style="width: {sidebarWidth}px" aria-hidden={!sidebarVisible}>
 			{#if fifOpen}
-				<div class="fif-panel">
-					<div class="fif-header">
-						<span class="fif-title">Find in Files</span>
-						<button class="icon-btn fif-close" onclick={() => (fifOpen = false)} title="Close">×</button>
-					</div>
-					<div class="fif-inputs">
-						<input
-							class="fif-input"
-							placeholder="Search…"
-							bind:value={fifQuery}
-							onkeydown={(e) => { if (e.key === 'Enter') runFindInFiles(); }}
-						/>
-						<div class="fif-options">
-							<label class="fif-opt-label">
-								<input type="checkbox" bind:checked={fifCaseSensitive} />
-								Aa
-							</label>
-							<button class="fif-go-btn" onclick={runFindInFiles} disabled={fifLoading}>
-								{fifLoading ? '…' : 'Find'}
-							</button>
-						</div>
-					</div>
-					{#if fifError}
-						<div class="fif-msg fif-err">{fifError}</div>
-					{/if}
-					{#if fifFileGroups.length > 0}
-						<div class="fif-summary">
-							{fifResults.length} match{fifResults.length !== 1 ? 'es' : ''} in {fifFileGroups.length} file{fifFileGroups.length !== 1 ? 's' : ''}
-						</div>
-						<div class="fif-results">
-							{#each fifFileGroups as [filePath, fileMatches]}
-								<div class="fif-file-group">
-									<div class="fif-fname" title={filePath}>
-										<span class="fif-fname-base">{filePath.split('/').pop()}</span>
-										<span class="fif-fname-dir">{filePath.split('/').slice(0,-1).join('/')}</span>
-									</div>
-									{#each fileMatches as match}
-										<button class="fif-match" onclick={() => jumpToSearchResult(match)} title="{filePath}:{match.line}">
-											<span class="fif-lnum">{match.line}</span>
-											<span class="fif-ltext">{match.text.trimStart()}</span>
-										</button>
-									{/each}
-								</div>
-							{/each}
-						</div>
-					{:else if !fifLoading && fifQuery.trim() && !fifError}
-						<div class="fif-msg">No results.</div>
-					{/if}
-				</div>
+				<FindInFilesPanel rootPath={rootPath} onjump={jumpToSearchResult} onclose={() => (fifOpen = false)} />
 			{:else if extOpen}
-				<div class="ext-panel">
-					<div class="ext-header">
-						<span class="ext-title">Extensions</span>
-						<button class="icon-btn ext-close" onclick={() => (extOpen = false)} title="Close">×</button>
-					</div>
-					<!-- Installed / Store tabs -->
-					<div class="ext-tabs">
-						<button class="ext-tab" class:ext-tab-active={extTab === 'installed'} onclick={() => extTab = 'installed'}>Installed</button>
-						<button class="ext-tab" class:ext-tab-active={extTab === 'store'} onclick={() => { extTab = 'store'; if (storeRegistry.length === 0 && !storeLoading) searchStore(); }}>Store</button>
-					</div>
-					{#if extTab === 'installed'}
-						{#if extList.length === 0}
-							<div class="ext-empty">
-								<p>No extensions installed.</p>
-								<p class="ext-empty-hint">Install from the Store tab, or drop extensions here:</p>
-								<code class="ext-empty-path">~/.config/nixium/extensions/</code>
-								<p class="ext-empty-hint">Each needs a <code>manifest.json</code> and an <code>index.js</code>.</p>
-							</div>
-						{:else}
-							{#each extList as ext}
-								<div class="ext-item" class:ext-item-selected={extDetailName === ext.name}>
-									<button class="ext-item-btn" onclick={() => openExtDetail(ext.name)}>
-										<span class="ext-item-label">{ext.displayName}</span>
-										<span class="ext-item-desc">v{ext.version} — {ext.description}</span>
-									</button>
-									<div class="ext-item-actions">
-										<input
-											type="checkbox"
-											checked={settings.extensions[ext.name] ?? false}
-											onchange={(e) => { settings.extensions = { ...settings.extensions, [ext.name]: (e.target as HTMLInputElement).checked }; }}
-											class="ext-toggle"
-											title={settings.extensions[ext.name] ? 'Disable' : 'Enable'}
-										/>
-									</div>
-								</div>
-							{/each}
-						{/if}
-					{:else}
-						<!-- Store tab -->
-						<div class="ext-store-search">
-							<input type="search" class="ext-store-input" placeholder="Search extensions…"
-								bind:value={storeQuery} onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); searchStore(); } }} />
-							<button class="ext-store-btn" onclick={searchStore} disabled={storeLoading}>{storeLoading ? '…' : '⌕'}</button>
-						</div>
-						{#if storeError}
-							<div class="ext-store-msg ext-store-err">{storeError}</div>
-						{:else if storeLoading}
-							<div class="ext-store-msg">Searching…</div>
-						{:else if storeResults.length === 0 && storeRegistry.length > 0}
-							<div class="ext-store-msg">No results for "{storeQuery}".</div>
-						{:else if storeResults.length === 0}
-							<div class="ext-store-msg">{storeError || 'No extensions found.'}</div>
-						{:else}
-							{#each storeResults as entry}
-								{@const alreadyInstalled = extList.some(e => e.name === entry.name)}
-								<div class="ext-store-item" class:ext-item-selected={extDetailName === entry.name}>
-									<button class="ext-item-btn" onclick={() => alreadyInstalled ? openExtDetail(entry.name) : openStoreExtDetail(entry)}>
-										<span class="ext-item-label">{entry.displayName}</span>
-										<span class="ext-item-desc">v{entry.version}{entry.author ? ` · ${entry.author}` : ''}</span>
-										{#if entry.description}<span class="ext-store-desc">{entry.description}</span>{/if}
-									</button>
-									{#if alreadyInstalled}
-										<span class="ext-store-badge">✓</span>
-									{:else}
-										<button class="ext-store-install-btn"
-											onclick={() => installExtension(entry)}
-											disabled={installingExt === entry.name}
-										>{ installingExt === entry.name ? '…' : 'Install' }</button>
-									{/if}
-								</div>
-							{/each}
-						{/if}
-					{/if}
-				</div>
+				<ExtensionsPanel
+					extList={extList}
+					enabledExtensions={settings.extensions}
+					extDetailName={extDetailName}
+					installingExt={installingExt}
+					onopendetail={openExtDetail}
+					onopenstoredetail={openStoreExtDetail}
+					ontoggle={(name, enabled) => { settings.extensions = { ...settings.extensions, [name]: enabled }; }}
+					oninstall={installExtension}
+					onclose={() => (extOpen = false)}
+				/>
 			{:else if mcpOpen}
-				<div class="mcp-panel">
-					<div class="mcp-header">
-						<span class="mcp-title">MCP Skills</span>
-						<button class="icon-btn mcp-close" onclick={() => (mcpOpen = false)} title="Close">×</button>
-					</div>
-					<div class="mcp-desc">
-						Toggle which AI tools are available in agent mode. Enabled tools are passed to the AI and can be called during agent tasks.
-					</div>
-					{#if mcpToolsLoading}
-						<div class="mcp-loading">Loading…</div>
-					{:else if mcpTools.length === 0}
-						<div class="mcp-empty">No MCP skills found.</div>
-					{:else}
-						{#each mcpTools as tool}
-							<div class="mcp-item" class:mcp-item-enabled={tool.enabled} class:mcp-item-active={mcpDetailName === tool.name}>
-								<button class="mcp-item-info mcp-item-btn" onclick={() => openMcpDetail(tool.name)}>
-									<span class="mcp-item-label">{tool.displayName}</span>
-									<span class="mcp-item-desc">{tool.description}</span>
-								</button>
-								<input
-									type="checkbox"
-									checked={tool.enabled}
-									onchange={() => toggleMcpTool(tool.name)}
-									class="mcp-toggle"
-									title={tool.enabled ? 'Disable this skill' : 'Enable this skill'}
-								/>
-							</div>
-						{/each}
-					{/if}
-				</div>
+				<McpPanel
+					tools={mcpTools}
+					loading={mcpToolsLoading}
+					detailName={mcpDetailName}
+					onclose={() => (mcpOpen = false)}
+					onopendetail={openMcpDetail}
+					ontoggle={toggleMcpTool}
+				/>
 			{:else}
 				<FileBrowser {rootPath} activeFile={activeTabPath} onopen={openFile} />
 			{/if}
@@ -1946,7 +1523,7 @@ RULES:
 			{/if}
 			{#if extDetailName}
 				{@const detailInstalled = extList.find(e => e.name === extDetailName)}
-				{@const detailStore = storeResults.find(e => e.name === extDetailName) ?? extDetailStoreEntry}
+				{@const detailStore = extDetailStoreEntry}
 				{@const detailInfo = detailInstalled
 					? { displayName: detailInstalled.displayName, version: detailInstalled.version, description: detailInstalled.description, author: '' }
 					: detailStore
@@ -2211,8 +1788,6 @@ RULES:
 	.modal-backdrop { position: fixed; inset: 0; z-index: 500; background: #00000088; display: flex; align-items: center; justify-content: center; }
 	.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; min-width: 380px; max-width: 500px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 20px 60px #00000099; }
 	.modal-title { font-size: 14px; font-weight: 600; color: var(--text); }
-	.settings-section { display: flex; flex-direction: column; gap: 10px; }
-	.settings-heading { font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
 	.modal-label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
 	.modal-input { padding: 7px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; outline: none; width: 100%; }
 	.modal-input:focus { border-color: var(--accent); }
@@ -2223,10 +1798,6 @@ RULES:
 	.modal-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 	.modal-btn.primary:hover { filter: brightness(1.1); }
 	.modal-sm { min-width: 320px; max-width: 420px; }
-	.ollama-model-row { display: flex; gap: 6px; align-items: stretch; }
-	.ollama-model-row .modal-input { flex: 1 1 auto; }
-	.fetch-btn { flex: 0 0 auto; padding: 6px 10px; font-size: 14px; }
-	.fetch-error { font-size: 11px; color: var(--error); margin-top: 2px; }
 	.tab-close { flex: 0 0 auto; background: none; border: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; border-radius: 3px; line-height: 1; opacity: 0; transition: opacity .1s, background .1s; }
 	.tab:hover .tab-close, .tab.active .tab-close { opacity: 1; }
 	.tab-close:hover { background: var(--hover-bg); color: var(--error); }
@@ -2277,93 +1848,6 @@ RULES:
 		.resize-handle { display: none; }
 	}
 
-	/* ── Command Palette ─────────────────────────────────────────────────── */
-	.palette-backdrop { position: fixed; inset: 0; z-index: 900; background: #00000055; display: flex; justify-content: center; align-items: flex-start; padding-top: 10vh; }
-	.palette { width: min(600px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 24px 64px #000000bb; display: flex; flex-direction: column; overflow: hidden; }
-	.palette-search { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
-	.palette-icon { font-size: 14px; color: var(--muted); flex: 0 0 auto; }
-	.palette-input { flex: 1; background: none; border: none; outline: none; color: var(--text); font-size: 14px; font-family: system-ui, sans-serif; }
-	.palette-input::placeholder { color: var(--muted); }
-	.palette-list { list-style: none; max-height: 380px; overflow-y: auto; padding: 4px 0; }
-	.palette-item { display: flex; align-items: center; gap: 8px; padding: 7px 14px; cursor: pointer; }
-	.palette-item:hover, .palette-item-active { background: var(--hover-bg); }
-	.palette-item-active { background: var(--active-bg) !important; }
-	.palette-label { flex: 1 1 auto; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.palette-desc { font-size: 11px; color: var(--muted); flex: 0 0 auto; }
-	.palette-kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; white-space: nowrap; flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; }
-	.palette-empty { padding: 12px 14px; font-size: 12px; color: var(--muted); }
-	.fif-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-	.fif-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 4px; flex: 0 0 auto; border-bottom: 1px solid var(--border); }
-	.fif-title { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
-	.fif-close { font-size: 15px; padding: 1px 4px; }
-	.fif-inputs { display: flex; flex-direction: column; gap: 5px; padding: 6px 8px; flex: 0 0 auto; border-bottom: 1px solid var(--border); }
-	.fif-input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 12px; padding: 5px 8px; outline: none; font-family: 'JetBrains Mono', monospace; }
-	.fif-input:focus { border-color: var(--accent); }
-	.fif-options { display: flex; align-items: center; gap: 6px; }
-	.fif-opt-label { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; padding: 2px 6px; border: 1px solid transparent; border-radius: var(--radius); }
-	.fif-opt-label:hover { border-color: var(--border); }
-	.fif-opt-label input { accent-color: var(--accent); }
-	.fif-go-btn { margin-left: auto; padding: 3px 10px; background: var(--accent); border: none; border-radius: var(--radius); color: var(--bg); font-size: 11px; font-weight: 700; cursor: pointer; }
-	.fif-go-btn:hover:not(:disabled) { filter: brightness(1.1); }
-	.fif-go-btn:disabled { opacity: .5; cursor: default; }
-	.fif-summary { font-size: 10px; color: var(--muted); padding: 4px 10px; flex: 0 0 auto; }
-	.fif-msg { font-size: 11px; color: var(--muted); padding: 8px 10px; }
-	.fif-err { color: var(--error); }
-	.fif-results { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; }
-	.fif-file-group { border-bottom: 1px solid var(--border); }
-	.fif-fname { display: flex; flex-direction: column; padding: 5px 8px 2px; background: var(--sidebar-bg); position: sticky; top: 0; z-index: 1; }
-	.fif-fname-base { font-size: 11px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.fif-fname-dir { font-size: 9px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'JetBrains Mono', monospace; }
-	.fif-match { display: flex; align-items: baseline; gap: 6px; width: 100%; background: none; border: none; padding: 2px 8px; cursor: pointer; text-align: left; min-width: 0; }
-	.fif-match:hover { background: var(--hover-bg); }
-	.fif-lnum { flex: 0 0 auto; font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace; min-width: 24px; text-align: right; }
-	.fif-ltext { flex: 1 1 auto; font-size: 11px; color: var(--text); font-family: 'JetBrains Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-	/* ── Extensions panel ─────────────────────────────────────────────────── */
-	.ext-panel { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
-	.ext-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 4px; flex: 0 0 auto; border-bottom: 1px solid var(--border); }
-	.ext-title { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
-	.ext-close { font-size: 15px; padding: 1px 4px; }
-	.ext-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-	.ext-item:hover { background: var(--hover-bg); }
-	.ext-item-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-	.ext-item-label { font-size: 12px; color: var(--text); }
-	.ext-item-desc { font-size: 10px; color: var(--muted); }
-	.ext-toggle { flex: 0 0 auto; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
-	.ext-empty { padding: 16px 12px; display: flex; flex-direction: column; gap: 6px; }
-	.ext-empty p { margin: 0; font-size: 12px; color: var(--text); }
-	.ext-empty-hint { font-size: 11px; color: var(--muted); }
-	.ext-empty-path { display: block; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent); padding: 4px 6px; background: var(--surface); border-radius: 4px; word-break: break-all; margin-top: 2px; }
-	/* Clickable ext list item */
-	.ext-item-btn { background: none; border: none; color: inherit; cursor: pointer; text-align: left; padding: 0; min-width: 0; flex: 1 1 0; display: flex; flex-direction: column; gap: 2px; }
-	.ext-item-btn:hover .ext-item-label { color: var(--accent); }
-	.ext-item-selected { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-	/* Extension tabs */
-	.ext-tabs { display: flex; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-	.ext-tab { flex: 1; background: none; border: none; border-bottom: 2px solid transparent; padding: 5px 0; font-size: 11px; color: var(--muted); cursor: pointer; transition: color .1s, border-color .1s; }
-	.ext-tab:hover { color: var(--text); }
-	.ext-tab-active { color: var(--accent) !important; border-bottom-color: var(--accent) !important; }
-	/* Installed tab – actions column */
-	.ext-item-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
-	.ext-remove-btn { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 2px 4px; border-radius: 3px; line-height: 1; }
-	.ext-remove-btn:hover:not(:disabled) { color: #f99; background: rgba(255,80,80,.1); }
-	.ext-remove-btn:disabled { opacity: .4; cursor: default; }
-	/* Store tab */
-	.ext-store-search { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-	.ext-store-input { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 12px; padding: 3px 6px; outline: none; }
-	.ext-store-input:focus { border-color: var(--accent); }
-	.ext-store-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 14px; padding: 2px 8px; cursor: pointer; }
-	.ext-store-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-	.ext-store-btn:disabled { opacity: .4; cursor: default; }
-	.ext-store-msg { font-size: 11px; color: var(--muted); padding: 10px 10px; }
-	.ext-store-err { color: #f99; }
-	.ext-store-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-	.ext-store-item:hover { background: var(--hover-bg); }
-	.ext-store-desc { font-size: 10px; color: var(--muted); display: block; margin-top: 2px; line-height: 1.4; white-space: normal; }
-	.ext-store-install-btn { flex: 0 0 auto; font-size: 11px; padding: 3px 8px; background: var(--accent); color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
-	.ext-store-install-btn:hover:not(:disabled) { opacity: .85; }
-	.ext-store-install-btn:disabled { opacity: .45; cursor: default; }
-	.ext-store-badge { flex: 0 0 auto; font-size: 11px; color: #6f9; padding: 2px 6px; }
 	/* Extension detail pane (VS Code-style full-width readme view) */
 	.ext-detail { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
 	.ext-detail-topbar { flex: 0 0 auto; padding: 6px 12px; border-bottom: 1px solid var(--border); }
@@ -2402,10 +1886,6 @@ RULES:
 	:global(.ext-detail-body blockquote) { border-left: 3px solid var(--accent); padding-left: 12px; margin: .5em 0; color: var(--muted); }
 	.ext-detail-loading { color: var(--muted); font-size: 12px; }
 	.ext-detail-no-readme { color: var(--muted); font-size: 12px; font-style: italic; }
-	/* Settings modal — editor options row */
-	.modal-label-row { flex-direction: row !important; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-	.modal-label-name { font-size: 13px; color: var(--text); min-width: 120px; }
-	.modal-label-desc { font-size: 10px; color: var(--muted); flex: 1; }
 	/* Notification toast */
 	.notification { position: fixed; bottom: 36px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 6px; font-size: 13px; box-shadow: 0 4px 20px rgba(0,0,0,.45); white-space: nowrap; max-width: 80vw; overflow: hidden; text-overflow: ellipsis; }
 	.notification-info { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
@@ -2413,23 +1893,6 @@ RULES:
 	.notif-close { background: none; border: none; color: inherit; cursor: pointer; font-size: 17px; padding: 0 2px; line-height: 1; opacity: .7; flex-shrink: 0; }
 	.notif-close:hover { opacity: 1; }
 
-	/* ── MCP Skills panel ────────────────────────────────────────────────── */
-	.mcp-panel { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
-	.mcp-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 4px; flex: 0 0 auto; border-bottom: 1px solid var(--border); }
-	.mcp-title { font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
-	.mcp-close { font-size: 15px; padding: 1px 4px; }
-	.mcp-desc { font-size: 10px; color: var(--muted); padding: 6px 10px; line-height: 1.5; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-	.mcp-loading, .mcp-empty { font-size: 11px; color: var(--muted); padding: 10px; }
-	.mcp-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); transition: background .1s; }
-	.mcp-item:hover { background: var(--hover-bg); }
-	.mcp-item-enabled { border-left: 2px solid var(--accent); padding-left: 8px; }
-	.mcp-item-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-	.mcp-item-btn { background: none; border: none; cursor: pointer; text-align: left; padding: 0; color: inherit; flex: 1 1 auto; min-width: 0; }
-	.mcp-item-btn:hover .mcp-item-label { color: var(--accent); }
-	.mcp-item-active { background: var(--hover-bg); }
-	.mcp-item-label { font-size: 12px; color: var(--text); font-weight: 500; }
-	.mcp-item-desc { font-size: 10px; color: var(--muted); line-height: 1.4; white-space: normal; }
-	.mcp-toggle { flex: 0 0 auto; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; margin-top: 2px; }
 	/* MCP toolbar button active state */
 	.mcp-btn { font-size: 14px; }
 	.mcp-btn-active { color: var(--accent) !important; }
