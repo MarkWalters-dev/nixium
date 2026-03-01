@@ -322,7 +322,9 @@ pub async fn call_tool(
         "params": { "name": tool_name, "arguments": args }
     }));
 
-    let responses = match run_mcp_session(config, &messages, &[1, 2], 60).await {
+    // Only wait for the tools/call response (id=2).  Some servers never send
+    // back an initialize ack (id=1) which would cause us to sit until timeout.
+    let responses = match run_mcp_session(config, &messages, &[2], 60).await {
         Ok(r) => r,
         Err(e) => return super::McpCallResponse { content: e, is_error: true },
     };

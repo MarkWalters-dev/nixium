@@ -50,7 +50,7 @@ export interface ExternalMcpToolInfo {
 
 // ── App settings ──────────────────────────────────────────────────────────────
 export interface AppSettings {
-	ai: { provider: string; apiKey: string; model: string; baseUrl: string };
+	ai: { provider: string; apiKey: string; model: string; baseUrl: string; timeoutSecs: number };
 	nixiumOptions: Record<EditorExtensionKey, boolean>;
 	extensions: Record<string, boolean>;
 }
@@ -65,7 +65,7 @@ export const DEFAULT_NIXIUM_OPTIONS: AppSettings['nixiumOptions'] = {
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
-	ai: { provider: 'openai', apiKey: '', model: 'gpt-4o-mini', baseUrl: '' },
+	ai: { provider: 'openai', apiKey: '', model: 'gpt-4o-mini', baseUrl: '', timeoutSecs: 120 },
 	nixiumOptions: { ...DEFAULT_NIXIUM_OPTIONS },
 	extensions: {},
 };

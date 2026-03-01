@@ -72,6 +72,9 @@ pub struct AgentRequest {
     /// Currently open file sent as context when the user enables "use context".
     #[serde(rename = "contextFile")]
     pub context_file: Option<ContextFile>,
+    /// Request timeout in seconds. Defaults to 120 when omitted.
+    #[serde(rename = "timeoutSecs", default)]
+    pub timeout_secs: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -818,8 +821,9 @@ pub async fn api_ai_agent(
 
     let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
+    let timeout = if req.timeout_secs == 0 { 120 } else { req.timeout_secs };
     let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(timeout))
         .build() {
         Ok(c) => c,
         Err(e) => return ApiError::response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),

@@ -71,8 +71,9 @@
 				<input type="text" bind:value={draft.ai.baseUrl} class="modal-input modal-mono"
 					placeholder={draft.ai.provider === 'ollama' ? 'http://localhost:11434' : 'https://api.example.com'} />
 			</label>
-			{/if}
-		</div>
+			{/if}		<label class="modal-label">Request Timeout (seconds)
+			<input type="number" bind:value={draft.ai.timeoutSecs} min="10" max="600" class="modal-input modal-mono" placeholder="120" />
+		</label>		</div>
 		<div class="settings-section">
 			<div class="settings-heading">Editor</div>
 			{#each EDITOR_OPTION_ITEMS as item}
