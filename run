@@ -1,3 +1,6 @@
 [[ "$HOSTNAME" == "p72" ]] && {
-  ./build.sh --release && NIXIUM_ADDR=0.0.0.0:8123 target/release/nixium
+  ./build.sh --release && \ {
+      ls -lh target/release/nixium && \ 
+      target/release/nixium
+  }
 }
