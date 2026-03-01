@@ -911,6 +911,20 @@
 			return;
 		}
 
+		// If we sent tools but the model generated plain text *about* function calls
+		// instead of issuing actual tool_calls (e.g. qwen:0.5b), retry in XML mode.
+		if (useNativeTools && !hasNativeToolCalls && nativeToolList.length === 0) {
+			const responseText = chatThreads[tidx].messages[idx].content;
+			const looksLikeFunctionConfusion =
+				/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"(parameters|arguments)"/i.test(responseText) ||
+				/function\s*call/i.test(responseText);
+			if (looksLikeFunctionConfusion) {
+				chatThreads[tidx].messages = chatThreads[tidx].messages.slice(0, -1);
+				await _doAiTurn(tidx, systemPrompt, depth, true);
+				return;
+			}
+		}
+
 		// ── XML command protocol (Ollama / any model) ─────────────────────
 		// Agent mode: full file + mcp_call protocol.
 		// Non-agent with MCP: mcp_call only (no file commands in ask/plan mode).
