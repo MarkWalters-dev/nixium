@@ -565,7 +565,9 @@ struct ExtManifest {
 /// contains a valid `manifest.json`.
 async fn api_extensions_list() -> Response {
     let dir = extensions_dir();
+    info!("EXT LIST {:?}", dir);
     if !dir.exists() {
+        info!("EXT LIST dir not found");
         return Json(Vec::<ExtManifest>::new()).into_response();
     }
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -580,6 +582,7 @@ async fn api_extensions_list() -> Response {
         let Ok(text) = std::fs::read_to_string(&manifest_path) else { continue };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
         let name = entry.file_name().to_string_lossy().to_string();
+        info!("EXT FOUND {}", name);
         manifests.push(ExtManifest {
             name:         name.clone(),
             display_name: v["displayName"].as_str().unwrap_or(&name).to_string(),
@@ -641,6 +644,7 @@ struct StoreSearchQuery {
 async fn api_ext_store_search(Query(params): Query<StoreSearchQuery>) -> Response {
     let registry_url = env::var("NIXIUM_EXT_REGISTRY")
         .unwrap_or_else(|_| DEFAULT_REGISTRY_URL.to_string());
+    info!("EXT STORE SEARCH q={:?} registry={}", params.q, registry_url);
 
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -651,8 +655,19 @@ async fn api_ext_store_search(Query(params): Query<StoreSearchQuery>) -> Respons
     };
 
     let entries: Vec<ExtStoreEntry> = match client.get(&registry_url).send().await {
-        Ok(res) if res.status().is_success() => res.json().await.unwrap_or_default(),
-        _ => vec![],
+        Ok(res) if res.status().is_success() => {
+            let v: Vec<ExtStoreEntry> = res.json().await.unwrap_or_default();
+            info!("EXT STORE registry returned {} entries", v.len());
+            v
+        }
+        Ok(res) => {
+            info!("EXT STORE registry fetch failed: HTTP {}", res.status());
+            vec![]
+        }
+        Err(e) => {
+            info!("EXT STORE registry fetch error: {e}");
+            vec![]
+        }
     };
 
     let q = params.q.to_lowercase();

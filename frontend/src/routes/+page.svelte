@@ -464,8 +464,12 @@
 		try {
 			const res = await fetch('/api/extensions/store/search?q=');
 			if (res.ok) {
-				// Only update the registry — storeResults is a $derived filter over it.
-				storeRegistry = await res.json();
+				const remote: StoreEntry[] = await res.json();
+				// Merge remote into registry: update existing entries by name,
+				// add new ones — but NEVER remove entries already in the registry.
+				const updated = new Map(storeRegistry.map(e => [e.name, e]));
+				for (const e of remote) updated.set(e.name, e);
+				storeRegistry = [...updated.values()];
 			} else storeError = `Store unavailable (${res.status})`;
 		} catch (e) { storeError = (e as Error).message; }
 		finally { storeLoading = false; }
