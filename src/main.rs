@@ -612,7 +612,7 @@ async fn api_extension_delete(Path(name): Path<String>) -> Response {
 
 /// Default public registry URL – override with `NIXIUM_EXT_REGISTRY` env var.
 const DEFAULT_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/nixiumhq/extensions/main/registry.json";
+    "https://raw.githubusercontent.com/MarkWalters-dev/nixium-extensions/main/registry.json";
 
 /// A single entry in the remote extension registry.
 #[derive(Serialize, Deserialize, Clone, Default)]

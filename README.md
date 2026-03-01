@@ -1,5 +1,7 @@
 # Nixium
 
+> 99% vibe coded
+
 Nixium is a local, privacy-first code editor and AI assistant that brings the power of modern AI models and tool-augmented reasoning to your desktop. It is designed for developers who want a fast, extensible, and hackable environment for coding, chatting with AI, and running custom tools—all without sending your code to the cloud.
 
 ---

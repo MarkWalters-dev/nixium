@@ -61,15 +61,19 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Step 4 – Install bundled extensions"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-EXT_SRC="$SCRIPT_DIR/extensions"
+EXT_REPO="https://github.com/MarkWalters-dev/nixium-extensions.git"
 EXT_DST="${NIXIUM_EXTENSIONS_DIR:-$HOME/.config/nixium/extensions}"
+EXT_TMP="$(mktemp -d)"
+echo "  Cloning $EXT_REPO …"
+git clone --depth=1 --quiet "$EXT_REPO" "$EXT_TMP"
 mkdir -p "$EXT_DST"
-for ext_dir in "$EXT_SRC"/*/; do
+for ext_dir in "$EXT_TMP"/*/; do
+  [[ -f "$ext_dir/manifest.json" ]] || continue
   ext_name="$(basename "$ext_dir")"
-  dest="$EXT_DST/$ext_name"
-  echo "  → $ext_name → $dest"
-  cp -r "$ext_dir" "$dest"
+  echo "  → $ext_name → $EXT_DST/$ext_name"
+  cp -r "$ext_dir" "$EXT_DST/$ext_name"
 done
+rm -rf "$EXT_TMP"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
