@@ -3,8 +3,13 @@
   npx npm-check-updates -u --filter "vite, @sveltejs/vite-plugin-svelte" --target @beta
   npx npm-check-updates -u --reject "vite, @sveltejs/vite-plugin-svelte"
   cd ..
-  git add .
-  git commit -m .
+  cd extensions
+  git add . && \
+  git commit -m . && \
+  git push
+  cd ..
+  git add . && \
+  git commit -m . && \
   git push
   cmd="cd code/nixium;rm frontend/pnpm-lock.yaml;git clean -fd;git pull"
   ssh p72-z "$cmd" || \
