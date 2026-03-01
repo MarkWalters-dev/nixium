@@ -1,5 +1,5 @@
 [[ "$HOSTNAME" == "p72" ]] && {
-  ./build.sh --release && \ {
+  ./build.sh --release && {
       ls -lh target/release/nixium && \ 
       target/release/nixium
   }
