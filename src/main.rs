@@ -68,6 +68,7 @@ async fn main() {
         // ── Terminal ─────────────────────────────────────────────────────
         .route("/terminal/ws", get(terminal::terminal_ws))
         // ── AI proxy ─────────────────────────────────────────────────────
+        .route("/ai/agent",         post(ai::api_ai_agent))
         .route("/ai/chat",          post(ai::api_ai_chat))
         .route("/ai/ollama-models", get(ai::api_ollama_models))
         // ── MCP skills ───────────────────────────────────────────────────

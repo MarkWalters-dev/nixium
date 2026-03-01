@@ -1,5 +1,34 @@
 import type { EditorExtensionKey } from '$lib/useCodeMirror';
 
+// ── Editor tab ────────────────────────────────────────────────────────────────
+export interface Tab { path: string; name: string; content: string; dirty: boolean; }
+export type StatusKind = 'idle' | 'info' | 'success' | 'error';
+
+// ── Storage keys & special tab sentinels ─────────────────────────────────────
+export const ROOT_KEY     = 'nixium-root';
+export const RECENT_KEY   = 'nixium-recent-folders';
+export const AUTOSAVE_KEY = 'nixium-autosave';
+export const TERM_TAB     = '__terminal__';
+export const CHAT_TAB     = '__chat__';
+export const MAX_RECENT   = 8;
+
+export function loadRecent(): string[] {
+	try { return JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]'); } catch { return []; }
+}
+export function saveRecent(list: string[]) {
+	localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+}
+
+// ── MCP tool ─────────────────────────────────────────────────────────────────
+export interface McpToolInfo {
+	name: string;
+	displayName: string;
+	description: string;
+	enabled: boolean;
+	inputSchema: Record<string, unknown>;
+}
+
+// ── App settings ──────────────────────────────────────────────────────────────
 export interface AppSettings {
 	ai: { provider: string; apiKey: string; model: string; baseUrl: string };
 	nixiumOptions: Record<EditorExtensionKey, boolean>;

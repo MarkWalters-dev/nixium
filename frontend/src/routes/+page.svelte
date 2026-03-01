@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { tick } from 'svelte';
-	import { createCodeMirrorAction } from '$lib/useCodeMirror';
+	import { createCodeMirrorAction, type EditorExtensionKey } from '$lib/useCodeMirror';
 	import FileBrowser from '$lib/FileBrowser.svelte';
 	import FolderPicker from '$lib/FolderPicker.svelte';
 	import Terminal from '$lib/Terminal.svelte';
@@ -11,25 +11,10 @@
 	import ExtensionsPanel, { type StoreEntry } from '$lib/ExtensionsPanel.svelte';
 	import McpPanel from '$lib/McpPanel.svelte';
 	import { marked } from 'marked';
-
-	import { type EditorExtensionKey } from '$lib/useCodeMirror';
 	import type { ExtensionManifest } from '$lib/extensions';
-	import { type AppSettings, type PaletteCommand, DEFAULT_SETTINGS, loadSettings, SETTINGS_KEY } from '$lib/types';
+	import { type AppSettings, type PaletteCommand, type Tab, type StatusKind, type McpToolInfo, DEFAULT_SETTINGS, loadSettings, SETTINGS_KEY, ROOT_KEY, RECENT_KEY, AUTOSAVE_KEY, TERM_TAB, CHAT_TAB, MAX_RECENT, loadRecent, saveRecent } from '$lib/types';
+	import { clickOutside } from '$lib/actions';
 
-	interface Tab { path: string; name: string; content: string; dirty: boolean; }
-	type StatusKind = 'idle' | 'info' | 'success' | 'error';
-
-	const ROOT_KEY     = 'nixium-root';
-	const RECENT_KEY   = 'nixium-recent-folders';
-	const AUTOSAVE_KEY = 'nixium-autosave';
-	const TERM_TAB     = '__terminal__';
-	const CHAT_TAB     = '__chat__';
-	const MAX_RECENT   = 8;
-
-	function loadRecent(): string[] {
-		try { return JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]'); } catch { return []; }
-	}
-	function saveRecent(list: string[]) { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); }
 
 	// ── State ─────────────────────────────────────────────────────────────────
 	let rootPath        = $state(typeof localStorage !== 'undefined' ? (localStorage.getItem(ROOT_KEY) ?? '/') : '/');
@@ -88,13 +73,6 @@
 	let extDetailStoreEntry    = $state<StoreEntry | null>(null);
 
 	// ── MCP Skills panel ─────────────────────────────────────────────────────
-	interface McpToolInfo {
-		name: string;
-		displayName: string;
-		description: string;
-		enabled: boolean;
-		inputSchema: Record<string, unknown>;
-	}
 	let mcpOpen         = $state(false);
 	let mcpTools        = $state<McpToolInfo[]>([]);
 	let mcpToolsLoading = $state(false);
@@ -230,15 +208,6 @@
 	function status(path: string) { return tabStatus[path] ?? { msg: '', kind: 'idle' as StatusKind }; }
 	function setStatus(path: string, msg: string, kind: StatusKind) {
 		tabStatus = { ...tabStatus, [path]: { msg, kind } };
-	}
-
-	/** Svelte action: fires callback when the user clicks outside the node. */
-	function clickOutside(node: HTMLElement, callback: () => void) {
-		function handler(e: MouseEvent) {
-			if (!node.contains(e.target as Node)) callback();
-		}
-		document.addEventListener('mousedown', handler, true);
-		return { destroy() { document.removeEventListener('mousedown', handler, true); } };
 	}
 
 	// ── CodeMirror ────────────────────────────────────────────────────────────
@@ -594,388 +563,6 @@
 	}
 	function switchChat(id: string) { activeChatId = id; }
 
-	// ── Agent tool definitions (OpenAI native function-calling format) ─────────
-	const AGENT_TOOLS = [
-		{ type: 'function', function: {
-			name: 'write_file',
-			description: 'Write (create or overwrite) a file on disk.',
-			parameters: { type: 'object', required: ['path', 'content'],
-				properties: {
-					path: { type: 'string', description: 'File path relative to the project root, or absolute.' },
-					content: { type: 'string', description: 'Full text content to write.' },
-				}
-			}
-		}},
-		{ type: 'function', function: {
-			name: 'read_file',
-			description: 'Read the text content of a file.',
-			parameters: { type: 'object', required: ['path'],
-				properties: { path: { type: 'string' } }
-			}
-		}},
-		{ type: 'function', function: {
-			name: 'list_directory',
-			description: 'List files and directories inside a directory.',
-			parameters: { type: 'object', required: ['path'],
-				properties: { path: { type: 'string' } }
-			}
-		}},
-	];
-
-	/** Resolve a path from the agent (possibly relative) to an absolute path. */
-	function _resolveAgentPath(p: string): string {
-		if (p.startsWith('/')) return p;
-		return `${rootPath.replace(/\/$/, '')}/${p}`;
-	}
-
-	/** Build the messages array to send to the AI API. Strips internal tool messages for XML mode. */
-	function _buildApiMessages(msgs: ChatMessage[], xmlMode: boolean): unknown[] {
-		if (xmlMode) {
-			// For XML mode: collapse tool result messages back into user turns
-			const out: unknown[] = [];
-			for (const m of msgs) {
-				if (m.role === 'tool') {
-					out.push({ role: 'user', content: `Tool result for ${m.tool_name ?? 'tool'}:\n${m.content}` });
-				} else if (!m.tool_calls?.length) {
-					out.push({ role: m.role as string, content: m.content });
-				}
-			}
-			return out;
-		}
-		// Collect all tool_call IDs that have a proper assistant tool_calls message.
-		// Any role:'tool' message whose id isn't in this set is from the XML fallback path
-		// and must be collapsed to a user message — OpenAI rejects orphaned tool messages.
-		const nativeCallIds = new Set<string>();
-		for (const m of msgs) {
-			if (m.tool_calls?.length) for (const tc of m.tool_calls) nativeCallIds.add(tc.id);
-		}
-		return msgs.map((m) => {
-			if (m.role === 'tool') {
-				if (m.tool_call_id && nativeCallIds.has(m.tool_call_id)) {
-					return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content };
-				}
-				// Orphaned tool result (XML fallback) → user message so providers don't reject it.
-				return { role: 'user', content: `Tool result for ${m.tool_name ?? 'tool'}:\n${m.content}` };
-			}
-			if (m.tool_calls?.length) return { role: 'assistant', content: m.content ?? '', tool_calls: m.tool_calls };
-			return { role: m.role as string, content: m.content };
-		});
-	}
-
-	/** Execute a single agent action (write/read/list) and return { result, isErr }. */
-	async function _execAgentAction(name: string, args: Record<string, string>): Promise<{ result: string; isErr: boolean }> {
-		let result = '';
-		let isErr = false;
-		try {
-			if (name === 'write_file') {
-				const path = _resolveAgentPath(args.path ?? '');
-				const r = await fetch('/api/fs/write', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ path, content: args.content ?? '' }),
-				});
-				if (r.ok) {
-					result = `Wrote ${args.path}`;
-					const existing = tabs.find((t) => t.path === path);
-					if (existing) {
-						existing.content = args.content ?? '';
-						existing.dirty = false;
-						if (activeTabPath === path) { await tick(); nixium.setValue(existing.content); }
-					} else {
-						openFile(path);
-					}
-				} else {
-					const e = await r.json().catch(() => ({ error: r.statusText })) as { error?: string };
-					result = `Error writing ${args.path}: ${e.error ?? r.statusText}`;
-					isErr = true;
-				}
-			} else if (name === 'read_file') {
-				const path = _resolveAgentPath(args.path ?? '');
-				const r = await fetch(`/api/fs/read?path=${encodeURIComponent(path)}`);
-				if (r.ok) { result = await r.text(); }
-				else { result = `Error reading ${args.path}: ${r.statusText}`; isErr = true; }
-			} else if (name === 'list_directory') {
-				const path = _resolveAgentPath(args.path ?? '');
-				const r = await fetch(`/api/fs/list?path=${encodeURIComponent(path)}`);
-				if (r.ok) {
-					const entries = await r.json() as Array<{ name: string; is_dir: boolean }>;
-					result = entries.map((e) => `${e.is_dir ? 'd' : 'f'} ${e.name}`).join('\n') || '(empty)';
-				} else { result = `Error listing ${args.path}: ${r.statusText}`; isErr = true; }
-			} else {
-				// Unknown built-in tool → try calling via the MCP endpoint
-				try {
-					const res = await fetch('/api/mcp/call', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ name, arguments: args }),
-					});
-					const data = await res.json() as { content: string; is_error: boolean };
-					result = data.content;
-					isErr  = data.is_error;
-				} catch (e) {
-					result = `MCP call failed: ${(e as Error).message}`;
-					isErr  = true;
-				}
-			}
-		} catch (e) { result = `Error: ${(e as Error).message}`; isErr = true; }
-		return { result, isErr };
-	}
-
-	interface XmlCommand { name: string; path: string; content: string; mcpArgs?: string; }
-
-	/**
-	 * Parse XML-style commands from model output.
-	 * Recognises:
-	 *   <write_file path="...">content</write_file>
-	 *   <read_file path="..." />  or  <read_file path="..."></read_file>
-	 *   <list_directory path="..." />
-	 *   <mcp_call name="...">{ "arg": "val" }</mcp_call>
-	 */
-	function _parseXmlCommands(text: string): XmlCommand[] {
-		const cmds: XmlCommand[] = [];
-		// write_file with body
-		const writeRe = /<write_file\s+path="([^"]+)"\s*>([\s\S]*?)<\/write_file>/g;
-		let m: RegExpExecArray | null;
-		while ((m = writeRe.exec(text)) !== null) cmds.push({ name: 'write_file', path: m[1], content: m[2] });
-		// read_file self-closing or empty
-		const readRe = /<read_file\s+path="([^"]+)"\s*\/?>/g;
-		while ((m = readRe.exec(text)) !== null) cmds.push({ name: 'read_file', path: m[1], content: '' });
-		// list_directory
-		const listRe = /<list_directory\s+path="([^"]+)"\s*\/?>/g;
-		while ((m = listRe.exec(text)) !== null) cmds.push({ name: 'list_directory', path: m[1], content: '' });
-		// mcp_call with JSON body
-		const mcpRe = /<mcp_call\s+name="([^"]+)"\s*>([\s\S]*?)<\/mcp_call>/g;
-		while ((m = mcpRe.exec(text)) !== null) cmds.push({ name: 'mcp_call', path: '', content: '', mcpArgs: m[2].trim(), mcpName: m[1] } as XmlCommand & { mcpName: string });
-		return cmds;
-	}
-
-	/** Strip XML command tags from the visible message text. */
-	function _stripXmlCommands(text: string): string {
-		return text
-			.replace(/<write_file\s+path="[^"]+"\s*>[\s\S]*?<\/write_file>/g, '')
-			.replace(/<read_file\s+path="[^"]+"\s*\/?>/g, '')
-			.replace(/<list_directory\s+path="[^"]+"\s*\/?>/g, '')
-			.replace(/<mcp_call\s+name="[^"]+"\s*>[\s\S]*?<\/mcp_call>/g, '')
-			.trim();
-	}
-
-	const MAX_AGENT_TURNS = 8;
-
-	/**
-	 * Execute one AI round-trip.
-	 * - OpenAI: native function-calling for MCP tools in ALL modes; file tools added in agent mode.
-	 * - Ollama/custom: XML mcp_call protocol in ALL modes; full XML agent protocol in agent mode.
-	 */
-	async function _doAiTurn(tidx: number, systemPrompt: string, depth: number, forceXml = false): Promise<void> {
-		if (depth >= MAX_AGENT_TURNS) return;
-
-		const isAgentMode = chatInteractionMode === 'agent';
-		const enabledMcpTools = mcpTools.filter(t => t.enabled);
-
-		// Anthropic uses a completely different API format (/v1/messages with its own tool schema).
-		// Every other provider (openai, ollama, custom) speaks OpenAI-compatible
-		// /v1/chat/completions with the `tools` field — modern Ollama supports this natively.
-		// Use native function-calling for all non-Anthropic providers whenever any tools exist.
-		// forceXml=true is set automatically when the model reports it does not support tools.
-		const useNativeTools = !forceXml && settings.ai.provider !== 'anthropic' && (isAgentMode || enabledMcpTools.length > 0);
-		// Non-OpenAI agent mode: full XML protocol (files + mcp_call).
-		const useXmlAgent = isAgentMode && !useNativeTools;
-		// Non-OpenAI non-agent with MCP tools: parse mcp_call XML in the response.
-		const useXmlMcp = !useNativeTools && enabledMcpTools.length > 0;
-
-		// Append empty assistant placeholder
-		chatThreads[tidx].messages = [...chatThreads[tidx].messages, { role: 'assistant', content: '' }];
-		const idx = chatThreads[tidx].messages.length - 1;
-
-		const apiMessages = _buildApiMessages(chatThreads[tidx].messages.slice(0, -1), useXmlAgent);
-		const reqBody: Record<string, unknown> = { ...settings.ai, messages: apiMessages, systemPrompt };
-		if (useNativeTools) {
-			// File-agent tools only in agent mode; MCP tools in every mode.
-			const agentFileTools = isAgentMode ? AGENT_TOOLS : [];
-			const mcpNativeTools = enabledMcpTools.map(t => ({
-				type: 'function',
-				function: { name: t.name, description: t.description, parameters: t.inputSchema },
-			}));
-			reqBody.tools = [...agentFileTools, ...mcpNativeTools];
-			reqBody.toolChoice = 'auto';
-		}
-
-		const res = await fetch('/api/ai/chat', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(reqBody),
-		});
-
-		if (!res.ok) {
-			const raw = await res.text().catch(() => '');
-			let msg: string;
-			try {
-				const outer = JSON.parse(raw) as { error?: unknown };
-				const errField = outer.error;
-				if (typeof errField === 'string') {
-					// ApiError wraps the upstream body as a string — try to extract the message
-					try {
-						const inner = JSON.parse(errField) as { error?: { message?: string } | string };
-						const ie = inner.error;
-						msg = (ie && typeof ie === 'object') ? (ie.message ?? errField) : (typeof ie === 'string' ? ie : errField);
-					} catch { msg = errField; }
-				} else if (errField && typeof errField === 'object') {
-					msg = (errField as { message?: string }).message ?? JSON.stringify(errField);
-				} else { msg = raw; }
-			} catch { msg = raw; }
-			if (!msg) msg = `HTTP ${res.status} ${res.statusText}`;
-			// If the model doesn't support tools, transparently retry in XML mode
-			if (useNativeTools && /does not support tools/i.test(msg)) {
-				chatThreads[tidx].messages = chatThreads[tidx].messages.slice(0, -1);
-				await _doAiTurn(tidx, systemPrompt, depth, true);
-				return;
-			}
-			chatThreads[tidx].messages[idx] = { role: 'assistant', content: msg, error: true };
-			return;
-		}
-
-		// ── Stream response ────────────────────────────────────────────────
-		const reader = res.body!.getReader();
-		const decoder = new TextDecoder();
-		let buf = '';
-		let hasNativeToolCalls = false;
-		const pendingToolCalls: Record<number, { id: string; name: string; arguments: string }> = {};
-
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			buf += decoder.decode(value, { stream: true });
-			const lines = buf.split('\n');
-			buf = lines.pop() ?? '';
-			for (const line of lines) {
-				if (!line.startsWith('data: ')) continue;
-				const data = line.slice(6).trim();
-				if (data === '[DONE]') continue;
-				try {
-					const p = JSON.parse(data) as {
-						choices?: Array<{
-							delta?: {
-								content?: string;
-								tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>;
-							};
-							finish_reason?: string;
-						}>;
-					};
-					const delta = p.choices?.[0]?.delta;
-					if (!delta) continue;
-					const chunk = delta.content ?? '';
-					if (chunk) {
-						chatThreads[tidx].messages[idx] = {
-							...chatThreads[tidx].messages[idx],
-							content: chatThreads[tidx].messages[idx].content + chunk,
-						};
-					}
-					// Always accumulate native tool calls (dispatched below only when useNativeTools)
-					if (delta.tool_calls) {
-						for (const tc of delta.tool_calls) {
-							const i = tc.index ?? 0;
-							if (!pendingToolCalls[i]) pendingToolCalls[i] = { id: '', name: '', arguments: '' };
-							if (tc.id) pendingToolCalls[i].id = tc.id;
-							if (tc.function?.name) pendingToolCalls[i].name += tc.function.name;
-							if (tc.function?.arguments) pendingToolCalls[i].arguments += tc.function.arguments;
-						}
-					}
-					if (p.choices?.[0]?.finish_reason === 'tool_calls') hasNativeToolCalls = true;
-				} catch { /* malformed chunk */ }
-			}
-		}
-
-		// ── Native tool calls (OpenAI) ─────────────────────────────────────
-		const nativeToolList = Object.values(pendingToolCalls);
-		if (useNativeTools && (hasNativeToolCalls || nativeToolList.length > 0)) {
-			const toolCallsArr = nativeToolList.map((tc) => ({
-				id: tc.id || `call_${Date.now()}`,
-				type: 'function' as const,
-				function: { name: tc.name, arguments: tc.arguments },
-			}));
-			chatThreads[tidx].messages[idx] = {
-				role: 'assistant',
-				content: chatThreads[tidx].messages[idx].content,
-				tool_calls: toolCallsArr,
-			};
-			for (const tc of toolCallsArr) {
-				let args: Record<string, string> = {};
-				try { args = JSON.parse(tc.function.arguments); } catch { /**/ }
-				const { result, isErr } = await _execAgentAction(tc.function.name, args);
-				chatThreads[tidx].messages = [...chatThreads[tidx].messages, {
-					role: 'tool', tool_call_id: tc.id, tool_name: tc.function.name,
-					content: result, error: isErr,
-				}];
-			}
-			await _doAiTurn(tidx, systemPrompt, depth + 1);
-			return;
-		}
-
-		// If we sent tools but the model generated plain text *about* function calls
-		// instead of issuing actual tool_calls (e.g. qwen:0.5b), retry in XML mode.
-		if (useNativeTools && !hasNativeToolCalls && nativeToolList.length === 0) {
-			const responseText = chatThreads[tidx].messages[idx].content;
-			const looksLikeFunctionConfusion =
-				/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"(parameters|arguments)"/i.test(responseText) ||
-				/function\s*call/i.test(responseText);
-			if (looksLikeFunctionConfusion) {
-				chatThreads[tidx].messages = chatThreads[tidx].messages.slice(0, -1);
-				await _doAiTurn(tidx, systemPrompt, depth, true);
-				return;
-			}
-		}
-
-		// ── XML command protocol (Ollama / any model) ─────────────────────
-		// Agent mode: full file + mcp_call protocol.
-		// Non-agent with MCP: mcp_call only (no file commands in ask/plan mode).
-		if (useXmlAgent || useXmlMcp) {
-			const fullText = chatThreads[tidx].messages[idx].content;
-			const cmds = useXmlAgent
-				? _parseXmlCommands(fullText)
-				: _parseXmlCommands(fullText).filter(c => c.name === 'mcp_call');
-			if (cmds.length > 0) {
-				// Show the clean text without XML tags
-				chatThreads[tidx].messages[idx] = {
-					...chatThreads[tidx].messages[idx],
-					content: _stripXmlCommands(fullText),
-				};
-				let needsFollowUp = false;
-				for (const cmd of cmds) {
-					let result: string;
-					let isErr: boolean;
-					if (cmd.name === 'mcp_call') {
-						// MCP tool call via XML protocol
-						const mcpCmd = cmd as typeof cmd & { mcpName?: string; mcpArgs?: string };
-						const toolName = mcpCmd.mcpName ?? '';
-						let args: Record<string, unknown> = {};
-						try { args = JSON.parse(mcpCmd.mcpArgs ?? '{}'); } catch { /**/ }
-						try {
-							const res = await fetch('/api/mcp/call', {
-								method: 'POST',
-								headers: { 'Content-Type': 'application/json' },
-								body: JSON.stringify({ name: toolName, arguments: args }),
-							});
-							const data = await res.json() as { content: string; is_error: boolean };
-							result = data.content; isErr = data.is_error;
-						} catch (e) {
-							result = `MCP call failed: ${(e as Error).message}`; isErr = true;
-						}
-						needsFollowUp = !isErr;
-					} else {
-						({ result, isErr } = await _execAgentAction(cmd.name, { path: cmd.path, content: cmd.content }));
-						// If we read/listed, let the AI continue with the results
-						if (cmd.name !== 'write_file' && !isErr) needsFollowUp = true;
-					}
-					chatThreads[tidx].messages = [...chatThreads[tidx].messages, {
-						role: 'tool', tool_call_id: `xml_${Date.now()}`, tool_name: cmd.name,
-						content: result, error: isErr,
-					}];
-				}
-				if (needsFollowUp) await _doAiTurn(tidx, systemPrompt, depth + 1, forceXml);
-			}
-		}
-	}
-
 	async function sendChat(text: string) {
 		const tidx = chatThreads.findIndex(t => t.id === activeChatId);
 		if (tidx === -1) return;
@@ -985,62 +572,104 @@
 		chatThreads[tidx].messages = [...chatThreads[tidx].messages, { role: 'user', content: text }];
 		chatLoading = true;
 		try {
-			// Lazily load MCP tools if not yet fetched.
-			if (mcpTools.length === 0) await fetchMcpTools();
-			const enabledMcpTools = mcpTools.filter(t => t.enabled);
-
-			let systemPrompt = 'You are a helpful coding assistant built into Nixium, a local code nixium. Be concise and practical. Format code in markdown triple-backtick blocks.';
-
-			// Always advertise available MCP tools so the AI can use them in any mode.
-			if (enabledMcpTools.length > 0) {
-				const toolLines = enabledMcpTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
-				if (settings.ai.provider !== 'anthropic') {
-					// Native tool calls: mention tools but don't force every reply to be a tool call.
-					systemPrompt += `\n\nYou have access to the following tools. Use them when they would genuinely help answer the user's question — otherwise just reply normally:\n${toolLines}`;
-				} else {
-					// Anthropic / fallback: XML mcp_call protocol.
-					systemPrompt += `\n\nYou have access to the following MCP tools. Use them when they would genuinely help by emitting:\n<mcp_call name="TOOL_NAME">{"arg":"value"}</mcp_call>\nOtherwise just reply normally. Available tools:\n${toolLines}`;
-				}
-			}
-			if (chatInteractionMode === 'plan') {
-				systemPrompt += '\n\nThe user wants a PLAN: outline the approach in numbered steps before writing any code.';
-			}
-			if (chatInteractionMode === 'agent') {
-				const mcpSection = enabledMcpTools.length > 0 && settings.ai.provider === 'anthropic'
-					? `\n\nReminder — call MCP skills via XML too:\n` +
-					  enabledMcpTools.map(t => `- ${t.name}`).join('\n') +
-					  `\n\nSyntax: <mcp_call name="SKILL_NAME">{"arg": "value"}</mcp_call>`
-					: '';
-				// XML agent instructions are only needed for Anthropic; all other providers use
-				// native function-calling tools for both file operations and MCP.
-				if (settings.ai.provider === 'anthropic') {
-					const xmlInstructions = `\n\nYou are in AGENT mode. You can read, write, and list files directly.
-
-To write or create a file, output this XML in your response (the file will be saved immediately):
-<write_file path="relative/path/to/file.py">
-full file contents here
-</write_file>
-
-To read a file:
-<read_file path="relative/path/to/file.py" />
-
-To list a directory:
-<list_directory path="." />${mcpSection}
-
-RULES:
-- When asked to create or save a file, ALWAYS use <write_file>. Never just show code in chat.
-- Paths are relative to the open project root.
-- You may use multiple commands in one response.
-- After the XML block, briefly confirm what you did.`;
-					systemPrompt += xmlInstructions;
-				} else {
-					systemPrompt += '\n\nYou are in AGENT mode. You can read, write, and list files and call tools. Use the tools provided to complete the task directly — do not just show code, actually execute the file operations.';
-				}
-			}
+			const reqBody: Record<string, unknown> = {
+				...settings.ai,
+				messages: chatThreads[tidx].messages,
+				mode: chatInteractionMode,
+				rootPath,
+			};
 			if (chatUseContext && activeTab && activeTabPath !== TERM_TAB && activeTabPath !== CHAT_TAB) {
-				systemPrompt += `\n\nThe user has this file open (${activeTab.name}):\n\`\`\`\n${activeTab.content.slice(0, 8000)}\n\`\`\``;
+				reqBody.contextFile = { name: activeTab.name, content: activeTab.content.slice(0, 8000) };
 			}
-			await _doAiTurn(tidx, systemPrompt, 0);
+
+			const res = await fetch('/api/ai/agent', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(reqBody),
+			});
+
+			if (!res.ok) {
+				const msg = await res.text().catch(() => `HTTP ${res.status}`);
+				chatThreads[tidx].messages = [...chatThreads[tidx].messages, { role: 'assistant', content: msg, error: true }];
+				return;
+			}
+
+			const reader = res.body!.getReader();
+			const decoder = new TextDecoder();
+			let buf = '';
+			let msgIdx: number | null = null;
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				buf += decoder.decode(value, { stream: true });
+				const lines = buf.split('\n');
+				buf = lines.pop() ?? '';
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					try {
+						const ev = JSON.parse(line.slice(6)) as { type: string; [k: string]: unknown };
+						switch (ev.type) {
+							case 'turn_start':
+								chatThreads[tidx].messages = [...chatThreads[tidx].messages, { role: 'assistant', content: '' }];
+								msgIdx = chatThreads[tidx].messages.length - 1;
+								break;
+							case 'turn_abort':
+								chatThreads[tidx].messages = chatThreads[tidx].messages.slice(0, -1);
+								msgIdx = null;
+								break;
+							case 'text':
+								if (msgIdx !== null) {
+									chatThreads[tidx].messages[msgIdx] = {
+										...chatThreads[tidx].messages[msgIdx],
+										content: chatThreads[tidx].messages[msgIdx].content + (ev.content as string),
+									};
+								}
+								break;
+							case 'text_set':
+								if (msgIdx !== null) {
+									chatThreads[tidx].messages[msgIdx] = {
+										...chatThreads[tidx].messages[msgIdx],
+										content: ev.content as string,
+									};
+								}
+								break;
+							case 'tool_call':
+								if (msgIdx !== null) {
+									const tc = { id: ev.id as string, type: 'function' as const, function: { name: ev.name as string, arguments: JSON.stringify(ev.args) } };
+									const cur = chatThreads[tidx].messages[msgIdx];
+									chatThreads[tidx].messages[msgIdx] = { ...cur, tool_calls: [...(cur.tool_calls ?? []), tc] };
+								}
+								break;
+							case 'tool_result': {
+								const fw = ev.file_written as { path: string; content: string } | undefined;
+								if (fw) {
+									const t = tabs.find(t => t.path === fw.path);
+									if (t) {
+										t.content = fw.content;
+										t.dirty = false;
+										if (activeTabPath === fw.path) { await tick(); nixium.setValue(fw.content); }
+									}
+								}
+								chatThreads[tidx].messages = [...chatThreads[tidx].messages, {
+									role: 'tool', tool_call_id: ev.id as string, tool_name: ev.name as string,
+									content: ev.content as string, error: ev.is_error as boolean,
+								}];
+								break;
+							}
+							case 'error':
+								if (msgIdx !== null) {
+									chatThreads[tidx].messages[msgIdx] = { ...chatThreads[tidx].messages[msgIdx], content: ev.message as string, error: true };
+								} else {
+									chatThreads[tidx].messages = [...chatThreads[tidx].messages, { role: 'assistant', content: ev.message as string, error: true }];
+								}
+								break;
+							case 'done':
+								break;
+						}
+					} catch { /* malformed event */ }
+				}
+			}
 		} catch (err) {
 			chatThreads[tidx].messages = [...chatThreads[tidx].messages, {
 				role: 'assistant', content: (err as Error).message, error: true,
@@ -1749,185 +1378,3 @@ RULES:
 		</div>
 	{/if}
 </div>
-
-<style>
-	:global(*) { box-sizing: border-box; margin: 0; padding: 0; }
-	:global(html, body) { height: 100%; overflow: hidden; overscroll-behavior: none; }
-
-	:root {
-		--bg: #1e1e2e; --sidebar-bg: #181825; --surface: #27273a;
-		--border: #313244; --hover-bg: #313244; --active-bg: #45475a;
-		--text: #cdd6f4; --muted: #6c7086; --accent: #89b4fa;
-		--success: #a6e3a1; --error: #f38ba8; --info: #fab387; --warning: #f9e2af;
-		--radius: 5px; --toolbar-h: 38px;
-	}
-
-	.shell { display: flex; flex-direction: column; height: 100dvh; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
-	.shell.dragging { cursor: col-resize; user-select: none; }
-
-	.toolbar { display: flex; align-items: center; gap: 4px; padding: 0 8px; height: var(--toolbar-h); flex: 0 0 auto; background: var(--surface); border-bottom: 1px solid var(--border); }
-
-	.icon-btn { flex: 0 0 auto; background: none; border: none; cursor: pointer; color: var(--muted); font-size: 16px; padding: 4px 6px; border-radius: var(--radius); line-height: 1; transition: color .12s, background .12s; }
-	.icon-btn:hover:not(:disabled) { color: var(--text); background: var(--hover-bg); }
-	.icon-btn:disabled { opacity: .3; cursor: default; }
-	.save-btn { font-size: 14px; }
-	.toolbar-right { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
-	.run-btn { padding: 4px 12px; background: #40a02b; border: none; border-radius: var(--radius); color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; transition: background .12s; }
-	.run-btn:hover { background: #50c03b; }
-	.autosave-badge { font-size: 13px; color: var(--accent); user-select: none; }
-
-	/* Dropdown uses position:fixed to escape any stacking context (no z-index battles) */
-	.menu-wrap { position: relative; flex: 0 0 auto; }
-	.menu-btn { font-size: 12px; padding: 4px 8px; letter-spacing: .03em; }
-	.dropdown {
-		position: fixed; top: var(--toolbar-h); left: 8px;
-		background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-		padding: 4px 0; min-width: 210px; list-style: none; z-index: 1000;
-		box-shadow: 0 8px 24px #00000088;
-	}
-	.dropdown li > button { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 7px 14px; background: none; border: none; color: var(--text); font-size: 13px; cursor: pointer; white-space: nowrap; gap: 8px; }
-	.dropdown li > button:hover:not(:disabled) { background: var(--hover-bg); }
-	.dropdown li > button:disabled { opacity: .4; cursor: default; }
-	.dropdown kbd { font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; line-height: 1.6; }
-	.menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
-	.menu-label { padding: 4px 14px 2px; font-size: 10px; font-weight: 700; letter-spacing: .07em; color: var(--muted); text-transform: uppercase; cursor: default; }
-	.dropdown .recent-path { overflow: hidden; text-overflow: ellipsis; max-width: 170px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
-	.dropdown .recent-icon { flex: 0 0 auto; }
-	.dropdown button.active-folder { color: var(--accent); }
-
-	.tabs { display: flex; align-items: stretch; flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
-	.tabs::-webkit-scrollbar { display: none; }
-	.tab { display: flex; align-items: center; gap: 4px; padding: 0 10px; height: 100%; border: none; border-right: 1px solid var(--border); border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 12.5px; cursor: pointer; white-space: nowrap; max-width: 180px; transition: background .1s, color .1s; }
-	.tab:hover { background: var(--hover-bg); color: var(--text); }
-	.tab.active { background: var(--bg); color: var(--text); border-bottom-color: var(--accent); }
-	.tab-name { overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
-	.tab-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); flex: 0 0 auto; }
-	.tab-dot-as { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
-	.tab-terminal.active { border-bottom-color: var(--success) !important; }
-	.tab-chat.active { border-bottom-color: var(--accent) !important; }
-
-	/* Editor layout */
-	.nixium-layout { flex: 1 1 auto; display: flex; flex-direction: row; min-width: 0; overflow: hidden; }
-
-	/* Chat panel (right side) */
-	.chat-vsep { flex: 0 0 4px; cursor: col-resize; background: var(--border); transition: background .15s; }
-	.chat-vsep:hover { background: var(--accent); }
-	.chat-panel-host { flex: 0 0 auto; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid var(--border); }
-	.chat-tab-host { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
-
-	/* AI button */
-	.ai-btn { color: var(--accent); font-weight: 700; font-size: 12px; }
-
-	/* Settings modal */
-	.modal-backdrop { position: fixed; inset: 0; z-index: 500; background: #00000088; display: flex; align-items: center; justify-content: center; }
-	.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; min-width: 380px; max-width: 500px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 20px 60px #00000099; }
-	.modal-title { font-size: 14px; font-weight: 600; color: var(--text); }
-	.modal-label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
-	.modal-input { padding: 7px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; outline: none; width: 100%; }
-	.modal-input:focus { border-color: var(--accent); }
-	.modal-mono { font-family: 'JetBrains Mono', monospace; }
-	.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
-	.modal-btn { padding: 6px 16px; background: var(--hover-bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; cursor: pointer; }
-	.modal-btn:hover { background: var(--active-bg); }
-	.modal-btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
-	.modal-btn.primary:hover { filter: brightness(1.1); }
-	.modal-sm { min-width: 320px; max-width: 420px; }
-	.tab-close { flex: 0 0 auto; background: none; border: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; border-radius: 3px; line-height: 1; opacity: 0; transition: opacity .1s, background .1s; }
-	.tab:hover .tab-close, .tab.active .tab-close { opacity: 1; }
-	.tab-close:hover { background: var(--hover-bg); color: var(--error); }
-
-	.body { display: flex; flex: 1 1 auto; min-height: 0; overflow: hidden; }
-	.sidebar { flex: 0 0 auto; min-width: 140px; max-width: 500px; border-right: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; }
-	.sidebar-hidden { display: none !important; }
-	.resize-handle { flex: 0 0 4px; cursor: col-resize; background: transparent; transition: background .15s; }
-	.resize-handle:hover, .shell.dragging .resize-handle { background: var(--accent); }
-
-	.nixium-column { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-	.nixium-area { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-	.nixium-area.hidden { display: none !important; }
-	.nixium-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-	:global(.nixium-host .cm-editor) { height: 100%; }
-	:global(.nixium-host .cm-scroller) { overflow: auto; }
-
-	.term-resize-handle { flex: 0 0 4px; cursor: row-resize; background: var(--border); transition: background .15s; }
-	.term-resize-handle:hover, .shell.dragging .term-resize-handle { background: var(--accent); }
-	/* Terminal host – always in DOM, CSS toggles layout */
-	.term-host { display: none; flex-direction: column; overflow: hidden; background: #11111b; }
-	.term-host.term-panel { display: flex; flex: 0 0 auto; border-top: 1px solid var(--border); }
-	.term-host.term-in-tab { display: flex; flex: 1 1 auto; min-height: 0; }
-	.term-bar { display: flex; align-items: center; justify-content: space-between; padding: 2px 8px; background: var(--sidebar-bg); border-bottom: 1px solid var(--border); flex: 0 0 auto; min-height: 26px; }
-	.term-bar-actions { display: flex; align-items: center; gap: 2px; }
-	.term-act { font-size: 13px; padding: 2px 5px; }
-	.term-label { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--muted); }
-	.term-body { flex: 1 1 auto; overflow: hidden; padding: 4px; }
-
-	.welcome { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
-	.welcome-inner { text-align: center; display: flex; flex-direction: column; gap: 12px; }
-	.welcome-icon { font-size: 40px; color: var(--border); }
-	.welcome p { font-size: 14px; }
-	.hint { font-size: 11px !important; color: var(--border); }
-
-	/* Status bar */
-	.statusbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; height: 22px; padding: 0 10px; background: var(--surface); border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); user-select: none; overflow: hidden; }
-	.statusbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
-	.statusbar-right { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
-	.sb-msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.sb-error { color: var(--error); }
-	.sb-info { color: var(--info); }
-	.sb-success { color: var(--success); }
-	.sb-lines { color: var(--muted); }
-
-	@media (max-width: 480px) {
-		.sidebar { position: absolute; top: var(--toolbar-h); bottom: 0; left: 0; z-index: 20; box-shadow: 4px 0 16px #00000066; }
-		.resize-handle { display: none; }
-	}
-
-	/* Extension detail pane (VS Code-style full-width readme view) */
-	.ext-detail { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
-	.ext-detail-topbar { flex: 0 0 auto; padding: 6px 12px; border-bottom: 1px solid var(--border); }
-	.ext-detail-back { font-size: 12px !important; color: var(--accent) !important; padding: 2px 6px !important; }
-	.ext-detail-scroll { flex: 1 1 auto; overflow-y: auto; padding: 24px 32px 40px; }
-	.ext-detail-hero { display: flex; gap: 20px; align-items: flex-start; margin-bottom: 16px; }
-	.ext-detail-icon { font-size: 56px; line-height: 1; flex: 0 0 auto; color: var(--accent); }
-	.ext-detail-hero-info { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-	.ext-detail-title { margin: 0; font-size: 22px; font-weight: 700; color: var(--text); }
-	.ext-detail-meta { display: flex; gap: 10px; flex-wrap: wrap; }
-	.ext-detail-ver { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
-	.ext-detail-author { font-size: 12px; color: var(--muted); }
-	.ext-detail-desc { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
-	.ext-detail-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
-	.ext-detail-btn { padding: 5px 14px; border-radius: 4px; font-size: 12px; font-weight: 600; border: none; cursor: pointer; transition: opacity .15s; }
-	.ext-detail-btn:disabled { opacity: .45; cursor: default; }
-	.ext-detail-btn-primary { background: var(--accent); color: #000; }
-	.ext-detail-btn-primary:hover:not(:disabled) { opacity: .85; }
-	.ext-detail-btn-danger { background: #5a1a1a; color: #f99; border: 1px solid #8a3a3a; }
-	.ext-detail-btn-danger:hover:not(:disabled) { background: #7a2020; }
-	.ext-detail-toggle-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
-	.ext-detail-toggle-label input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
-	.ext-detail-hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
-	.ext-detail-body { font-size: 13px; color: var(--text); line-height: 1.7; max-width: 800px; }
-	:global(.ext-detail-body h1) { font-size: 20px; margin: 1.2em 0 .4em; }
-	:global(.ext-detail-body h2) { font-size: 16px; margin: 1em 0 .3em; }
-	:global(.ext-detail-body h3) { font-size: 14px; margin: .8em 0 .2em; }
-	:global(.ext-detail-body p)  { margin: .5em 0; }
-	:global(.ext-detail-body code) { font-family: 'JetBrains Mono', monospace; font-size: 12px; background: var(--surface); padding: 1px 4px; border-radius: 3px; }
-	:global(.ext-detail-body pre) { background: var(--surface); border-radius: 6px; padding: 12px 14px; overflow-x: auto; }
-	:global(.ext-detail-body pre code) { background: none; padding: 0; }
-	:global(.ext-detail-body a) { color: var(--accent); }
-	:global(.ext-detail-body ul, .ext-detail-body ol) { padding-left: 1.5em; margin: .4em 0; }
-	:global(.ext-detail-body li) { margin: .2em 0; }
-	:global(.ext-detail-body img) { max-width: 100%; border-radius: 4px; }
-	:global(.ext-detail-body blockquote) { border-left: 3px solid var(--accent); padding-left: 12px; margin: .5em 0; color: var(--muted); }
-	.ext-detail-loading { color: var(--muted); font-size: 12px; }
-	.ext-detail-no-readme { color: var(--muted); font-size: 12px; font-style: italic; }
-	/* Notification toast */
-	.notification { position: fixed; bottom: 36px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 6px; font-size: 13px; box-shadow: 0 4px 20px rgba(0,0,0,.45); white-space: nowrap; max-width: 80vw; overflow: hidden; text-overflow: ellipsis; }
-	.notification-info { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
-	.notification-error { background: #5a1a1a; color: #f99; border: 1px solid #8a3a3a; }
-	.notif-close { background: none; border: none; color: inherit; cursor: pointer; font-size: 17px; padding: 0 2px; line-height: 1; opacity: .7; flex-shrink: 0; }
-	.notif-close:hover { opacity: 1; }
-
-	/* MCP toolbar button active state */
-	.mcp-btn { font-size: 14px; }
-	.mcp-btn-active { color: var(--accent) !important; }
-</style>

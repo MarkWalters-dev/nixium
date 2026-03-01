@@ -47,7 +47,7 @@ $ cargo build --release
 $ ./target/release/nixium
 ```
 
-The app will start a local web server. Open your browser to [http://localhost:3000](http://localhost:3000) to use Nixium.
+The app will start a local web server. Open your browser to [http://localhost:8123](http://localhost:8123) to use Nixium.
 
 ---
 
