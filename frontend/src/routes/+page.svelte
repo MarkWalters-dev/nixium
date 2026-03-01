@@ -816,10 +816,14 @@
 			chatLoading = false;
 			saveChatThreads();
 			// Auto-send any message that was queued while we were busy.
+			// Use setTimeout(0) to defer past the current synchronous tick so Svelte
+			// can process chatLoading = false before sendChat sets it back to true.
+			// Without this, the $effect timer never resets and the new request can
+			// stall because the stream reader hasn't fully cleaned up yet.
 			if (queuedChat) {
 				const q = queuedChat;
 				queuedChat = null;
-				sendChat(q);
+				setTimeout(() => sendChat(q), 0);
 			}
 		}
 	}
