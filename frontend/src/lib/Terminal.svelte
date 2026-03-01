@@ -21,7 +21,10 @@
 		term = new Terminal({
 cursorBlink: true,
 fontSize: 13,
-fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace",
+// Nerd Font variants must come first so powerline/icon glyphs resolve correctly.
+// The plain names are fallbacks for systems without Nerd Fonts installed.
+fontFamily: "'JetBrainsMono Nerd Font Mono', 'JetBrainsMono Nerd Font', 'JetBrains Mono', 'CaskaydiaCove Nerd Font Mono', 'FiraCode Nerd Font Mono', 'Fira Code', monospace",
+unicodeVersion: '11',
 theme: {
 background: '#11111b', foreground: '#cdd6f4', cursor: '#f5c2e7',
 selectionBackground: '#45475a',
