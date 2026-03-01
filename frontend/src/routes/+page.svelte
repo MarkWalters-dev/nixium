@@ -42,6 +42,19 @@
 	let chatLoading     = $state(false);
 	let chatAbortController = $state<AbortController | null>(null);
 	let queuedChat      = $state<string | null>(null);
+	let chatWarning     = $state(false);
+	let chatWarningTimer = $state<ReturnType<typeof setTimeout> | null>(null);
+
+	$effect(() => {
+		if (chatLoading) {
+			const secs = (settings.ai.timeoutSecs || 120);
+			chatWarningTimer = setTimeout(() => { chatWarning = true; }, secs * 1000);
+		} else {
+			if (chatWarningTimer !== null) { clearTimeout(chatWarningTimer); chatWarningTimer = null; }
+			chatWarning = false;
+		}
+		return () => { if (chatWarningTimer !== null) { clearTimeout(chatWarningTimer); chatWarningTimer = null; } };
+	});
 	let chatUseContext  = $state(false);
 	let chatVisible     = $state(false);
 	let chatMode        = $state<'panel' | 'tab'>('panel');
@@ -670,6 +683,14 @@
 	function stopChat() {
 		chatAbortController?.abort();
 		chatAbortController = null;
+	}
+
+	function continueChat() {
+		chatWarning = false;
+		// Reset the timer so the warning appears again after another full interval.
+		if (chatWarningTimer !== null) { clearTimeout(chatWarningTimer); chatWarningTimer = null; }
+		const secs = (settings.ai.timeoutSecs || 120);
+		chatWarningTimer = setTimeout(() => { chatWarning = true; }, secs * 1000);
 	}
 
 	async function sendChat(text: string) {
@@ -1463,6 +1484,8 @@
 					onstop={stopChat}
 					onqueue={(t) => (queuedChat = t)}
 					queuedMessage={queuedChat}
+					longRunning={chatWarning}
+					oncontinue={continueChat}
 				/>
 			</div>
 		{/if}
@@ -1493,6 +1516,8 @@
 					onstop={stopChat}
 					onqueue={(t) => (queuedChat = t)}
 					queuedMessage={queuedChat}
+					longRunning={chatWarning}
+					oncontinue={continueChat}
 				/>
 			</div>
 		{/if}

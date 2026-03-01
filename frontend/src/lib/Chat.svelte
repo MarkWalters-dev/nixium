@@ -38,6 +38,8 @@
 		onstop,
 		onqueue,
 		queuedMessage = null,
+		longRunning = false,
+		oncontinue,
 	}: {
 		messages: ChatMessage[];
 		threads: ChatThread[];
@@ -65,6 +67,10 @@
 		onqueue?: (text: string) => void;
 		/** Text currently waiting in the queue (shown as a badge). */
 		queuedMessage?: string | null;
+		/** Show the "AI has been working for a while" warning banner. */
+		longRunning?: boolean;
+		/** Called when the user clicks Continue in the long-running warning. */
+		oncontinue?: () => void;
 	} = $props();
 
 	let input = $state('');
@@ -248,6 +254,15 @@
 		{/if}
 		</div>
 
+		{#if longRunning}
+			<div class="long-running-banner">
+				<span class="long-running-icon">⏳</span>
+				<span class="long-running-text">The AI has been working for a while.</span>
+				<button class="long-running-btn continue" onclick={oncontinue}>Continue</button>
+				{#if onstop}<button class="long-running-btn stop" onclick={onstop}>Stop</button>{/if}
+			</div>
+		{/if}
+
 		<div class="chat-input-area">
 			<!-- Mode + model toolbar -->
 			<div class="chat-toolbar">
@@ -393,6 +408,14 @@
 	.chat-input-row { display: flex; gap: 6px; align-items: flex-end; }
 	.chat-input { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; padding: 7px 10px; resize: none; outline: none; font-family: inherit; line-height: 1.45; }
 	.chat-input:focus { border-color: var(--accent); }
+	.long-running-banner { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: color-mix(in srgb, var(--accent) 10%, var(--surface)); border-top: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); font-size: 12px; flex: 0 0 auto; }
+	.long-running-icon { font-size: 14px; flex-shrink: 0; }
+	.long-running-text { flex: 1; color: var(--text); }
+	.long-running-btn { padding: 3px 12px; border-radius: var(--radius); border: 1px solid var(--border); font-size: 12px; cursor: pointer; font-weight: 600; }
+	.long-running-btn.continue { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+	.long-running-btn.continue:hover { filter: brightness(1.1); }
+	.long-running-btn.stop { background: #e06c75; color: #fff; border-color: #e06c75; }
+	.long-running-btn.stop:hover { background: #f38ba8; border-color: #f38ba8; }
 	.queued-badge { font-size: 10px; color: var(--accent); padding: 2px 8px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 10px; align-self: flex-start; }
 	.send-btn { flex: 0 0 auto; width: 32px; height: 32px; background: var(--accent); border: none; border-radius: var(--radius); color: var(--bg); font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: 700; transition: background .12s; }
 	.send-btn:hover:not(:disabled) { background: #a8c7fa; }
