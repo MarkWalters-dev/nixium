@@ -14,7 +14,7 @@ Once edits are finished, follow this exact sequence without asking for permissio
 
 **Phase 1: Local Commit & Push (Chromebook)**
 1. Stage all changes: `git add .`
-2. **Generate Message:** Based on the edits you just performed, create a context-aware **Conventional Commit** message. (Do not run `git diff`; use your internal task context).
+2. Generate a concise, imperative-style commit message (e.g., "feat: update nixium styles").
 3. Execute: `git commit -m "[Your Generated Message]"`
 4. Execute: `git push`
 
