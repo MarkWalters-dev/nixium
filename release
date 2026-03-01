@@ -1,2 +1,1 @@
-gh workflow run build-release.yml
-gh run watch
+gh run watch --workflow "build-release.yml"
