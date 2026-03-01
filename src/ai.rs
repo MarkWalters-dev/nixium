@@ -491,7 +491,7 @@ async fn do_openai_turn(
     tools: Option<serde_json::Value>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
 ) -> TurnOutput {
-    let base = if !base_url.is_empty() { base_url.to_string() }
+    let base = if !base_url.is_empty() { base_url.trim_end_matches('/').to_string() }
                else if provider == "ollama" { "http://localhost:11434".to_string() }
                else { "https://api.openai.com".to_string() };
 
@@ -916,7 +916,7 @@ pub async fn api_ai_chat(Json(req): Json<AiChatRequest>) -> Response {
         _ => {
             // OpenAI-compatible: openai, ollama, custom
             let base = if !req.base_url.is_empty() {
-                req.base_url.clone()
+                req.base_url.trim_end_matches('/').to_string()
             } else if req.provider == "ollama" {
                 "http://localhost:11434".to_string()
             } else {

@@ -70,10 +70,15 @@
 			<label class="modal-label">Base URL
 				<input type="text" bind:value={draft.ai.baseUrl} class="modal-input modal-mono"
 					placeholder={draft.ai.provider === 'ollama' ? 'http://localhost:11434' : 'https://api.example.com'} />
+				{#if draft.ai.provider === 'ollama'}
+					<span class="field-hint">Use <code>localhost</code> if Ollama runs on the same machine as nixium. For a remote host, start Ollama with <code>OLLAMA_HOST=0.0.0.0 ollama serve</code>.</span>
+				{/if}
 			</label>
-			{/if}		<label class="modal-label">Request Timeout (seconds)
-			<input type="number" bind:value={draft.ai.timeoutSecs} min="10" max="600" class="modal-input modal-mono" placeholder="120" />
-		</label>		</div>
+			{/if}
+			<label class="modal-label">Request Timeout (seconds)
+				<input type="number" bind:value={draft.ai.timeoutSecs} min="10" max="600" class="modal-input modal-mono" placeholder="120" />
+			</label>
+		</div>
 		<div class="settings-section">
 			<div class="settings-heading">Editor</div>
 			{#each EDITOR_OPTION_ITEMS as item}
@@ -114,6 +119,8 @@
 	.ollama-model-row .modal-input { flex: 1 1 auto; }
 	.fetch-btn { flex: 0 0 auto; padding: 6px 10px; font-size: 14px; }
 	.fetch-error { font-size: 11px; color: var(--error); margin-top: 2px; }
+	.field-hint { font-size: 10px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+	.field-hint code { font-family: 'JetBrains Mono', monospace; font-size: 10px; background: var(--hover-bg); border-radius: 3px; padding: 0 3px; }
 	.modal-label-row { flex-direction: row !important; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 	.modal-label-name { font-size: 13px; color: var(--text); min-width: 120px; }
 	.modal-label-desc { font-size: 10px; color: var(--muted); flex: 1; }
