@@ -120,6 +120,8 @@
 	let extDetailName          = $state<string | null>(null);
 	let extDetailReadmeHtml    = $state<string>('');
 	let extDetailReadmeLoading = $state(false);
+	// Preserved store entry so we can reinstall after uninstalling from detail.
+	let extDetailStoreEntry    = $state<StoreEntry | null>(null);
 
 	// ── MCP Skills panel ─────────────────────────────────────────────────────
 	interface McpToolInfo {
@@ -387,6 +389,7 @@
 
 	async function openExtDetail(name: string) {
 		extDetailName = name;
+		extDetailStoreEntry = storeResults.find(e => e.name === name) ?? null;
 		extDetailReadmeHtml = '';
 		extDetailReadmeLoading = true;
 		try {
@@ -401,6 +404,7 @@
 
 	async function openStoreExtDetail(entry: StoreEntry) {
 		extDetailName = entry.name;
+		extDetailStoreEntry = entry;
 		extDetailReadmeHtml = '';
 		extDetailReadmeLoading = true;
 		try {
@@ -420,6 +424,7 @@
 	function closeExtDetail() {
 		extDetailName = null;
 		extDetailReadmeHtml = '';
+		extDetailStoreEntry = null;
 	}
 
 	async function searchStore() {
@@ -1771,7 +1776,7 @@ RULES:
 						<!-- Store tab -->
 						<div class="ext-store-search">
 							<input type="search" class="ext-store-input" placeholder="Search extensions…"
-								bind:value={storeQuery} onkeydown={(e) => e.key === 'Enter' && searchStore()} />
+								bind:value={storeQuery} onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); searchStore(); } }} />
 							<button class="ext-store-btn" onclick={searchStore} disabled={storeLoading}>{storeLoading ? '…' : '⌕'}</button>
 						</div>
 						{#if storeError}
@@ -1853,7 +1858,7 @@ RULES:
 			<!-- Extension detail view (VS Code-style full-pane readme) -->
 			{#if extDetailName}
 				{@const detailInstalled = extList.find(e => e.name === extDetailName)}
-				{@const detailStore = storeResults.find(e => e.name === extDetailName)}
+				{@const detailStore = storeResults.find(e => e.name === extDetailName) ?? extDetailStoreEntry}
 				{@const detailInfo = detailInstalled
 					? { displayName: detailInstalled.displayName, version: detailInstalled.version, description: detailInstalled.description, author: '' }
 					: detailStore
@@ -1888,7 +1893,7 @@ RULES:
 										<!-- Uninstall -->
 										<button class="ext-detail-btn ext-detail-btn-danger"
 											disabled={removingExt === extDetailName}
-											onclick={async () => { await removeExtension(extDetailName!); closeExtDetail(); }}
+											onclick={() => removeExtension(extDetailName!)}
 										>{ removingExt === extDetailName ? 'Removing…' : 'Uninstall' }</button>
 									{:else if detailStore}
 										<!-- Install from store -->
