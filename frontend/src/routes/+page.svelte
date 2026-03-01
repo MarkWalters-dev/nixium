@@ -146,6 +146,9 @@
 	let mcpOpen         = $state(false);
 	let mcpTools        = $state<McpToolInfo[]>([]);
 	let mcpToolsLoading = $state(false);
+	let mcpDetailName          = $state<string | null>(null);
+	let mcpDetailReadmeHtml    = $state<string>('');
+	let mcpDetailReadmeLoading = $state(false);
 
 	async function fetchMcpTools() {
 		mcpToolsLoading = true;
@@ -163,6 +166,25 @@
 				mcpTools = mcpTools.map(t => t.name === name ? updated : t);
 			}
 		} catch { /* ignore */ }
+	}
+
+	async function openMcpDetail(name: string) {
+		mcpDetailName = name;
+		mcpDetailReadmeHtml = '';
+		mcpDetailReadmeLoading = true;
+		try {
+			const res = await fetch(`/api/mcp/tools/${encodeURIComponent(name)}/readme`);
+			if (res.ok) {
+				const text = await res.text();
+				mcpDetailReadmeHtml = await Promise.resolve(marked.parse(text)) as string;
+			}
+		} catch { /* ignore */ }
+		finally { mcpDetailReadmeLoading = false; }
+	}
+
+	function closeMcpDetail() {
+		mcpDetailName = null;
+		mcpDetailReadmeHtml = '';
 	}
 
 	function openMcp() {
@@ -268,7 +290,7 @@
 	const activeTab  = $derived(tabs.find((t) => t.path === activeTabPath) ?? null);
 	const isTermTab  = $derived(terminalMode === 'tab' && activeTabPath === TERM_TAB);
 	const isChatTab  = $derived(chatMode === 'tab' && chatVisible && activeTabPath === CHAT_TAB);
-	const hideEditor = $derived(isTermTab || isChatTab || !!extDetailName);
+	const hideEditor = $derived(isTermTab || isChatTab || !!extDetailName || !!mcpDetailName);
 	const lineCount  = $derived(activeTab && activeTabPath !== TERM_TAB && activeTabPath !== CHAT_TAB ? activeTab.content.split('\n').length : 0);
 
 	const paletteCommands = $derived([
@@ -1848,11 +1870,11 @@ RULES:
 						<div class="mcp-empty">No MCP skills found.</div>
 					{:else}
 						{#each mcpTools as tool}
-							<div class="mcp-item" class:mcp-item-enabled={tool.enabled}>
-								<div class="mcp-item-info">
+							<div class="mcp-item" class:mcp-item-enabled={tool.enabled} class:mcp-item-active={mcpDetailName === tool.name}>
+								<button class="mcp-item-info mcp-item-btn" onclick={() => openMcpDetail(tool.name)}>
 									<span class="mcp-item-label">{tool.displayName}</span>
 									<span class="mcp-item-desc">{tool.description}</span>
-								</div>
+								</button>
 								<input
 									type="checkbox"
 									checked={tool.enabled}
@@ -1880,6 +1902,48 @@ RULES:
 		<div class="nixium-layout">
 		<div class="nixium-column">
 			<!-- Extension detail view (VS Code-style full-pane readme) -->
+			<!-- MCP skill detail view -->
+			{#if mcpDetailName}
+				{@const mcpDetail = mcpTools.find(t => t.name === mcpDetailName)}
+				<div class="ext-detail">
+					<div class="ext-detail-topbar">
+						<button class="ext-detail-back icon-btn" onclick={closeMcpDetail} title="Back to MCP list">← MCP Skills</button>
+					</div>
+					<div class="ext-detail-scroll">
+						<div class="ext-detail-hero">
+							<div class="ext-detail-icon">🔌</div>
+							<div class="ext-detail-hero-info">
+								<h1 class="ext-detail-title">{mcpDetail?.displayName ?? mcpDetailName}</h1>
+								<div class="ext-detail-meta">
+									<span class="ext-detail-author">Built-in MCP skill</span>
+								</div>
+								{#if mcpDetail?.description}<p class="ext-detail-desc">{mcpDetail.description}</p>{/if}
+								<div class="ext-detail-actions">
+									<label class="ext-detail-toggle-label">
+										<input
+											type="checkbox"
+											checked={mcpDetail?.enabled ?? false}
+											onchange={() => mcpDetailName && toggleMcpTool(mcpDetailName)}
+										/>
+										{mcpDetail?.enabled ? 'Enabled' : 'Disabled'}
+									</label>
+								</div>
+							</div>
+						</div>
+						<hr class="ext-detail-hr" />
+						<div class="ext-detail-body">
+							{#if mcpDetailReadmeLoading}
+								<div class="ext-detail-loading">Loading readme…</div>
+							{:else if mcpDetailReadmeHtml}
+								<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+								{@html mcpDetailReadmeHtml}
+							{:else}
+								<div class="ext-detail-no-readme">No README found.</div>
+							{/if}
+						</div>
+					</div>
+				</div>
+			{/if}
 			{#if extDetailName}
 				{@const detailInstalled = extList.find(e => e.name === extDetailName)}
 				{@const detailStore = storeResults.find(e => e.name === extDetailName) ?? extDetailStoreEntry}
@@ -2360,6 +2424,9 @@ RULES:
 	.mcp-item:hover { background: var(--hover-bg); }
 	.mcp-item-enabled { border-left: 2px solid var(--accent); padding-left: 8px; }
 	.mcp-item-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+	.mcp-item-btn { background: none; border: none; cursor: pointer; text-align: left; padding: 0; color: inherit; flex: 1 1 auto; min-width: 0; }
+	.mcp-item-btn:hover .mcp-item-label { color: var(--accent); }
+	.mcp-item-active { background: var(--hover-bg); }
 	.mcp-item-label { font-size: 12px; color: var(--text); font-weight: 500; }
 	.mcp-item-desc { font-size: 10px; color: var(--muted); line-height: 1.4; white-space: normal; }
 	.mcp-toggle { flex: 0 0 auto; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; margin-top: 2px; }
