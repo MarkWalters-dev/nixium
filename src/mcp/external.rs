@@ -125,10 +125,21 @@ fn servers_path(data_dir: &Path) -> std::path::PathBuf {
 
 pub fn load_servers(data_dir: &Path) -> Vec<ExternalMcpServer> {
     let path = servers_path(data_dir);
-    std::fs::read_to_string(&path)
+    let mut servers: Vec<ExternalMcpServer> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Migrate any entry where the command field contains embedded args
+    // (e.g. "npx -y @foo/mcp" stored as the whole command string).
+    for srv in &mut servers {
+        if srv.command.contains(' ') {
+            let mut parts: Vec<String> = srv.command.split_whitespace().map(|s| s.to_string()).collect();
+            srv.command = parts.remove(0);
+            parts.extend(srv.args.drain(..));
+            srv.args = parts;
+        }
+    }
+    servers
 }
 
 fn save_servers(data_dir: &Path, servers: &[ExternalMcpServer]) {
@@ -441,13 +452,22 @@ pub async fn api_add_server(
         return ApiError::response(StatusCode::BAD_REQUEST, "name and command are required");
     }
 
+    // Shell-split the command field so users can paste a full command line like
+    // "npx -y @sveltejs/mcp" without having to separate it into command + args.
+    let mut parts: Vec<String> = req.command.trim()
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    let exe = parts.remove(0); // guaranteed non-empty — checked above
+    parts.extend(req.args);    // explicit args follow inline args
+
     let id = format!("{}", uuid_simple());
 
     let server = ExternalMcpServer {
         id: id.clone(),
         name: req.name.trim().to_string(),
-        command: req.command.trim().to_string(),
-        args: req.args,
+        command: exe,
+        args: parts,
         env: req.env,
         enabled: true,
     };
