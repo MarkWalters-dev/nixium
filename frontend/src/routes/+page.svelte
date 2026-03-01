@@ -40,6 +40,8 @@
 	let chatThreads     = $state<ChatThread[]>([]);
 	let activeChatId    = $state(_initChatId);
 	let chatLoading     = $state(false);
+	let chatAbortController = $state<AbortController | null>(null);
+	let queuedChat      = $state<string | null>(null);
 	let chatUseContext  = $state(false);
 	let chatVisible     = $state(false);
 	let chatMode        = $state<'panel' | 'tab'>('panel');
@@ -665,6 +667,11 @@
 		fetch(`/api/chats/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
 	}
 
+	function stopChat() {
+		chatAbortController?.abort();
+		chatAbortController = null;
+	}
+
 	async function sendChat(text: string) {
 		const tidx = chatThreads.findIndex(t => t.id === activeChatId);
 		if (tidx === -1) return;
@@ -673,6 +680,8 @@
 		}
 		chatThreads[tidx].messages = [...chatThreads[tidx].messages, { role: 'user', content: text }];
 		chatLoading = true;
+		const controller = new AbortController();
+		chatAbortController = controller;
 		try {
 			const reqBody: Record<string, unknown> = {
 				...settings.ai,
@@ -688,6 +697,7 @@
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(reqBody),
+				signal: controller.signal,
 			});
 
 			if (!res.ok) {
@@ -773,12 +783,23 @@
 				}
 			}
 		} catch (err) {
-			chatThreads[tidx].messages = [...chatThreads[tidx].messages, {
-				role: 'assistant', content: (err as Error).message, error: true,
-			}];
+			if ((err as DOMException).name === 'AbortError') {
+				// User pressed stop — don't add an error message, just finish cleanly.
+			} else {
+				chatThreads[tidx].messages = [...chatThreads[tidx].messages, {
+					role: 'assistant', content: (err as Error).message, error: true,
+				}];
+			}
 		} finally {
+			chatAbortController = null;
 			chatLoading = false;
 			saveChatThreads();
+			// Auto-send any message that was queued while we were busy.
+			if (queuedChat) {
+				const q = queuedChat;
+				queuedChat = null;
+				sendChat(q);
+			}
 		}
 	}
 
@@ -1439,6 +1460,9 @@
 					ontogglecontext={() => (chatUseContext = !chatUseContext)}
 					onchangemode={(m) => (chatInteractionMode = m)}
 					onchangemodel={(m) => (settings.ai.model = m)}
+					onstop={stopChat}
+					onqueue={(t) => (queuedChat = t)}
+					queuedMessage={queuedChat}
 				/>
 			</div>
 		{/if}
@@ -1466,6 +1490,9 @@
 					ontogglecontext={() => (chatUseContext = !chatUseContext)}
 					onchangemode={(m) => (chatInteractionMode = m)}
 					onchangemodel={(m) => (settings.ai.model = m)}
+					onstop={stopChat}
+					onqueue={(t) => (queuedChat = t)}
+					queuedMessage={queuedChat}
 				/>
 			</div>
 		{/if}

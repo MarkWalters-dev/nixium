@@ -657,9 +657,13 @@ async fn run_agent_loop(
     let is_anthropic = req.provider == "anthropic";
     let is_agent = req.mode == "agent";
 
-    // Fetch live MCP tool state from AppState (enabled flags may have changed)
-    // Ensure external server tool caches are populated before building the tool list.
-    mcp::external::ensure_cache(&state).await;
+    // Kick off external-server tool caching in the background so it never blocks
+    // the agent turn.  Tools will be available from the *next* request onward if
+    // the cache was cold; that is acceptable for first-use latency.
+    {
+        let state_for_cache = state.clone();
+        tokio::spawn(async move { mcp::external::ensure_cache(&state_for_cache).await; });
+    }
 
     let mcp_tools: Vec<mcp::McpToolInfo> = {
         let enabled = state.mcp_enabled.read().await;
@@ -693,7 +697,8 @@ async fn run_agent_loop(
         let use_native = !force_xml && !is_anthropic && (is_agent || mcp_tools.iter().any(|t| t.enabled));
         let xml_msgs = !use_native;
 
-        let _ = tx.send(sse(&AgentEvent::TurnStart));
+        // Exit immediately if the client has disconnected (stop button / navigation).
+        if tx.send(sse(&AgentEvent::TurnStart)).is_err() { return; }
 
         let api_msgs = build_api_messages(&history, xml_msgs);
 
@@ -738,9 +743,10 @@ async fn run_agent_loop(
                     tc_json["function"]["arguments"].as_str().unwrap_or("{}")
                 ).unwrap_or(serde_json::json!({}));
 
-                let _ = tx.send(sse(&AgentEvent::ToolCall { id: id.clone(), name: name.clone(), args: args.clone() }));
+                // Skip expensive tool execution if the client has already disconnected.
+                if tx.send(sse(&AgentEvent::ToolCall { id: id.clone(), name: name.clone(), args: args.clone() })).is_err() { return; }
                 let out = exec_tool(&name, &args, &req.root_path, &state, &client).await;
-                let _ = tx.send(sse(&AgentEvent::ToolResult { id: id.clone(), name: name.clone(), content: out.content.clone(), is_error: out.is_error, file_written: out.file_written }));
+                if tx.send(sse(&AgentEvent::ToolResult { id: id.clone(), name: name.clone(), content: out.content.clone(), is_error: out.is_error, file_written: out.file_written })).is_err() { return; }
                 history.push(serde_json::json!({ "role": "tool", "tool_call_id": id, "content": out.content }));
             }
             continue; // next AI turn to incorporate tool results
@@ -770,10 +776,10 @@ async fn run_agent_loop(
                         (cmd.name.clone(), serde_json::json!({ "path": cmd.path, "content": cmd.body }))
                     };
 
-                    let _ = tx.send(sse(&AgentEvent::ToolCall { id: id.clone(), name: name.clone(), args: args.clone() }));
+                    if tx.send(sse(&AgentEvent::ToolCall { id: id.clone(), name: name.clone(), args: args.clone() })).is_err() { return; }
                     let out = exec_tool(&name, &args, &req.root_path, &state, &client).await;
                     if !out.is_error { needs_followup = true; }
-                    let _ = tx.send(sse(&AgentEvent::ToolResult { id: id.clone(), name: name.clone(), content: out.content.clone(), is_error: out.is_error, file_written: out.file_written }));
+                    if tx.send(sse(&AgentEvent::ToolResult { id: id.clone(), name: name.clone(), content: out.content.clone(), is_error: out.is_error, file_written: out.file_written })).is_err() { return; }
                     history.push(serde_json::json!({ "role": "tool", "tool_call_id": id, "content": out.content }));
                 }
 
@@ -812,7 +818,9 @@ pub async fn api_ai_agent(
 
     let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let client = match reqwest::Client::builder().build() {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build() {
         Ok(c) => c,
         Err(e) => return ApiError::response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };

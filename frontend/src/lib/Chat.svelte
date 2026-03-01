@@ -35,6 +35,9 @@
 		ontogglecontext,
 		onchangemode,
 		onchangemodel,
+		onstop,
+		onqueue,
+		queuedMessage = null,
 	}: {
 		messages: ChatMessage[];
 		threads: ChatThread[];
@@ -56,6 +59,12 @@
 		ontogglecontext: () => void;
 		onchangemode: (m: 'ask' | 'plan' | 'agent') => void;
 		onchangemodel: (m: string) => void;
+		/** Called when the user clicks the stop button while the AI is working. */
+		onstop?: () => void;
+		/** Called when the user sends a message while the AI is already working (queues it). */
+		onqueue?: (text: string) => void;
+		/** Text currently waiting in the queue (shown as a badge). */
+		queuedMessage?: string | null;
 	} = $props();
 
 	let input = $state('');
@@ -75,7 +84,13 @@
 
 	function send() {
 		const text = input.trim();
-		if (!text || loading) return;
+		if (!text) return;
+		if (loading) {
+			// Queue the message instead of blocking.
+			onqueue?.(text);
+			input = '';
+			return;
+		}
 		input = '';
 		onsend(text);
 	}
@@ -264,17 +279,32 @@
 			{#if useContext && activeFile}
 				<div class="ctx-badge">📎 {activeFile.split('/').pop()}</div>
 			{/if}
+			{#if queuedMessage}
+				<div class="queued-badge">📥 Queued: {queuedMessage.length > 44 ? queuedMessage.slice(0, 44) + '…' : queuedMessage}</div>
+			{/if}
 			<div class="chat-input-row">
 				<!-- svelte-ignore a11y_autofocus -->
 				<textarea
 					class="chat-input"
 					bind:value={input}
-					placeholder="Ask a question… (Enter to send, Shift+Enter for newline)"
+					placeholder={loading ? 'Type to queue… (Enter to queue, Esc to stop)' : 'Ask a question… (Enter to send, Shift+Enter for newline)'}
 					rows="2"
 					autofocus
-					onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+					onkeydown={(e) => {
+						if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+						if (e.key === 'Escape' && loading) { e.preventDefault(); onstop?.(); }
+					}}
 				></textarea>
-				<button class="send-btn" onclick={send} disabled={loading || !input.trim()} title="Send (Enter)">↑</button>
+				{#if loading && onstop}
+					<button class="stop-btn" onclick={onstop} title="Stop (Esc)">■</button>
+				{/if}
+				<button
+					class="send-btn"
+					class:send-btn-queue={loading}
+					onclick={send}
+					disabled={!input.trim()}
+					title={loading ? 'Queue (Enter)' : 'Send (Enter)'}
+				>↑</button>
 			</div>
 		</div>
 	{/if}
@@ -363,7 +393,12 @@
 	.chat-input-row { display: flex; gap: 6px; align-items: flex-end; }
 	.chat-input { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; padding: 7px 10px; resize: none; outline: none; font-family: inherit; line-height: 1.45; }
 	.chat-input:focus { border-color: var(--accent); }
+	.queued-badge { font-size: 10px; color: var(--accent); padding: 2px 8px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 10px; align-self: flex-start; }
 	.send-btn { flex: 0 0 auto; width: 32px; height: 32px; background: var(--accent); border: none; border-radius: var(--radius); color: var(--bg); font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: 700; transition: background .12s; }
 	.send-btn:hover:not(:disabled) { background: #a8c7fa; }
 	.send-btn:disabled { opacity: .4; cursor: default; }
+	.send-btn-queue { background: var(--muted) !important; opacity: 1 !important; }
+	.send-btn-queue:hover { background: var(--text) !important; }
+	.stop-btn { flex: 0 0 auto; width: 32px; height: 32px; background: #e06c75; border: none; border-radius: var(--radius); color: #fff; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .12s; }
+	.stop-btn:hover { background: #f38ba8; }
 </style>
