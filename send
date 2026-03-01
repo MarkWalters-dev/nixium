@@ -1,3 +1,5 @@
+# Ignore this script, mostly for personal use.
+
 [[ "$HOSTNAME" == "cb3" ]] && {
   cd frontend
   npx npm-check-updates -u --filter "vite, @sveltejs/vite-plugin-svelte" --target @beta

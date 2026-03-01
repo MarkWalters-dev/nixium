@@ -615,7 +615,7 @@ async fn api_extension_delete(Path(name): Path<String>) -> Response {
 
 /// Default public registry URL – override with `NIXIUM_EXT_REGISTRY` env var.
 const DEFAULT_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/MarkWalters-dev/nixium-extensions/main/registry.json";
+    "https://raw.githubusercontent.com/MarkWalters-dev/nixium-extensions/master/registry.json";
 
 /// A single entry in the remote extension registry.
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -710,11 +710,12 @@ async fn api_ext_store_install(Json(req): Json<ExtInstallRequest>) -> Response {
         return ApiError::response(StatusCode::BAD_REQUEST, "Invalid extension name");
     }
 
+    info!("EXT INSTALL {} from {}", req.name, req.download_url);
     let ext_dir = extensions_dir().join(&req.name);
 
     // --- Download --------------------------------------------------------
     let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(120))
         .build()
     {
         Ok(c) => c,
@@ -722,16 +723,27 @@ async fn api_ext_store_install(Json(req): Json<ExtInstallRequest>) -> Response {
     };
 
     let bytes = match client.get(&req.download_url).send().await {
-        Ok(r) => match r.bytes().await {
-            Ok(b) => b,
-            Err(e) => {
+        Ok(r) => {
+            let status = r.status();
+            info!("EXT INSTALL download HTTP {status}");
+            if !status.is_success() {
                 return ApiError::response(
                     StatusCode::BAD_GATEWAY,
-                    format!("Failed to read download body: {e}"),
-                )
+                    format!("Download returned HTTP {status}"),
+                );
             }
-        },
+            match r.bytes().await {
+                Ok(b) => { info!("EXT INSTALL downloaded {} bytes", b.len()); b }
+                Err(e) => {
+                    return ApiError::response(
+                        StatusCode::BAD_GATEWAY,
+                        format!("Failed to read download body: {e}"),
+                    )
+                }
+            }
+        }
         Err(e) => {
+            info!("EXT INSTALL download error: {e}");
             return ApiError::response(
                 StatusCode::BAD_GATEWAY,
                 format!("Download failed: {e}"),
@@ -781,15 +793,25 @@ async fn api_ext_store_install(Json(req): Json<ExtInstallRequest>) -> Response {
                 })
             });
 
+        // After stripping the archive prefix, paths look like:
+        //   "github/manifest.json", "word-count/index.js", "README.md", …
+        // Only extract files inside "<name>/" and strip that prefix.
+        let ext_prefix = format!("{}/", req.name);
         for i in 0..archive.len() {
             let mut file = match archive.by_index(i) {
                 Ok(f) => f,
                 Err(_) => continue,
             };
             let raw_name = file.name().to_string();
-            let rel_name = match &prefix {
-                Some(pfx) => raw_name.strip_prefix(pfx).unwrap_or(&raw_name).to_string(),
-                None => raw_name.clone(),
+            // Strip archive-level prefix (e.g. "nixium-extensions-main/")
+            let after_archive = match &prefix {
+                Some(pfx) => raw_name.strip_prefix(pfx).unwrap_or(&raw_name),
+                None => &raw_name,
+            };
+            // Only files inside the extension's own subdirectory
+            let rel_name = match after_archive.strip_prefix(&ext_prefix) {
+                Some(r) => r.to_string(),
+                None => continue,
             };
             if rel_name.is_empty() || rel_name.ends_with('/') || rel_name.contains("..") {
                 continue;
@@ -835,10 +857,16 @@ async fn api_ext_store_install(Json(req): Json<ExtInstallRequest>) -> Response {
             }
         });
 
+        let ext_prefix = format!("{}/", req.name);
         for (raw_name, data) in &entries_data {
-            let rel_name: String = match &prefix {
-                Some(pfx) => raw_name.strip_prefix(pfx).unwrap_or(raw_name).to_string(),
-                None => raw_name.clone(),
+            let after_archive: &str = match &prefix {
+                Some(pfx) => raw_name.strip_prefix(pfx).unwrap_or(raw_name),
+                None => raw_name,
+            };
+            // Only extract files inside "<name>/"
+            let rel_name = match after_archive.strip_prefix(&ext_prefix) {
+                Some(r) => r.to_string(),
+                None => continue,
             };
             if rel_name.is_empty() || rel_name.ends_with('/') || rel_name.contains("..") {
                 continue;
