@@ -44,7 +44,104 @@ pub const BUILTIN_MCP_TOOLS: &[BuiltinMcpMeta] = &[
             },
             "required": ["crate_name"]
         }"#,
-        readme: rust::README,
+        readme: rust::README_LOOKUP,
+    },
+    BuiltinMcpMeta {
+        name: "search_rust_crates",
+        display_name: "Rust Crate Search (crates.io)",
+        description: "Searches crates.io by keyword and returns a ranked list of matching crates \
+                      with name, version, description, and download count.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search keywords, e.g. \"async http client\"."
+                },
+                "per_page": {
+                    "type": "number",
+                    "description": "Number of results to return (1–10, default 5)."
+                }
+            },
+            "required": ["query"]
+        }"#,
+        readme: rust::README_SEARCH,
+    },
+    BuiltinMcpMeta {
+        name: "lookup_rustc_error",
+        display_name: "Rustc Error Lookup",
+        description: "Fetches the official Rust compiler error explanation for a given error code \
+                      (e.g. E0308) from doc.rust-lang.org.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "error_code": {
+                    "type": "string",
+                    "description": "Rust compiler error code, e.g. E0308."
+                }
+            },
+            "required": ["error_code"]
+        }"#,
+        readme: rust::README_ERROR,
+    },
+    BuiltinMcpMeta {
+        name: "get_crate_dependencies",
+        display_name: "Crate Dependencies",
+        description: "Fetches the dependency list for a Rust crate version from crates.io, \
+                      grouped by runtime, dev, and build dependencies.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "crate_name": {
+                    "type": "string",
+                    "description": "The crate name."
+                },
+                "version": {
+                    "type": "string",
+                    "description": "Specific version to inspect. Defaults to latest."
+                }
+            },
+            "required": ["crate_name"]
+        }"#,
+        readme: rust::README_DEPS,
+    },
+    BuiltinMcpMeta {
+        name: "get_crate_versions",
+        display_name: "Crate Version History",
+        description: "Lists all published versions of a Rust crate from crates.io, including \
+                      publish date, downloads, and yanked status.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "crate_name": {
+                    "type": "string",
+                    "description": "The crate name."
+                }
+            },
+            "required": ["crate_name"]
+        }"#,
+        readme: rust::README_VERSIONS,
+    },
+    BuiltinMcpMeta {
+        name: "lookup_docs_rs",
+        display_name: "docs.rs Lookup",
+        description: "Returns the docs.rs documentation URL for a Rust crate and optionally \
+                      searches for a specific item (struct, trait, fn, etc.) within it.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "crate_name": {
+                    "type": "string",
+                    "description": "The crate name."
+                },
+                "item": {
+                    "type": "string",
+                    "description": "Optional item to search for, e.g. \"spawn\" or \"Serialize\"."
+                }
+            },
+            "required": ["crate_name"]
+        }"#,
+        readme: rust::README_DOCS,
     },
     BuiltinMcpMeta {
         name: "get_current_temperature",
@@ -107,7 +204,12 @@ pub async fn dispatch_mcp_call(
     client: &reqwest::Client,
 ) -> McpCallResponse {
     match name {
-        "lookup_rust_crate" => rust::call(args, client).await,
+        "lookup_rust_crate"      => rust::call_lookup(args, client).await,
+        "search_rust_crates"     => rust::call_search(args, client).await,
+        "lookup_rustc_error"     => rust::call_error(args, client).await,
+        "get_crate_dependencies" => rust::call_deps(args, client).await,
+        "get_crate_versions"     => rust::call_versions(args, client).await,
+        "lookup_docs_rs"         => rust::call_docs(args, client).await,
         "get_current_temperature" => weather::call(args, client).await,
         other => McpCallResponse {
             content: format!("Unknown MCP tool: {other}"),
