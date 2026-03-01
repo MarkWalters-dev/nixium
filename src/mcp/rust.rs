@@ -60,8 +60,8 @@ fn strip_html(s: &str) -> String {
 }
 
 fn remove_tag_blocks(html: &str, tag: &str) -> String {
-    let open = format!("<{tag");
-    let close = format!("</{tag}>");
+    let open = format!("<{}", tag);
+    let close = format!("</{}>", tag);
     let mut out = String::new();
     let mut rest = html;
     while let Some(start) = rest.to_lowercase().find(&open) {
