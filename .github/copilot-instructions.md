@@ -2,6 +2,7 @@
 - **NEVER** use heredocs (`<<EOF`) or `echo` in the terminal to create or edit files.
 - **ALWAYS** use the `createFile` or `editFile` (replace_string) tools for any file modifications.
 - Use the terminal **ONLY** for running commands (e.g., `npm install`, `ls`, `git status`) or executing existing scripts.
+- **NEVER** run build commands locally: no `cargo build`, `cargo test`, `cargo run`, `npm run build`, `npx svelte-check`, or any other compile/check step. Just make the code changes and commit — CI handles builds.
 
 ## Post-Edit Workflow
 - **Mandatory Final Step:** After completing all code edits and verifying they work, you MUST commit the changes to the current branch.
