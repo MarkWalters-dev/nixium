@@ -72,8 +72,9 @@ pub struct AgentRequest {
     /// Currently open file sent as context when the user enables "use context".
     #[serde(rename = "contextFile")]
     pub context_file: Option<ContextFile>,
-    /// Request timeout in seconds. Defaults to 120 when omitted.
+    /// Request timeout in seconds. Used by the frontend warning timer; not enforced server-side.
     #[serde(rename = "timeoutSecs", default)]
+    #[allow(dead_code)]
     pub timeout_secs: u64,
 }
 
