@@ -5,10 +5,6 @@ import { defineConfig } from 'vite';
 export default defineConfig({
 	plugins: [
 		sveltekit(),
-		bundle: [
-    		// Vite 8 Rolldown-powered bundling
-		    experimentalrolldown: true 
-  		],
 		VitePWA({
 			// The manifest is provided manually in static/manifest.json so the
 			// plugin only needs to inject the service-worker.
@@ -31,6 +27,10 @@ export default defineConfig({
 			},
 		}),
 	],
+	bundle: {
+		// Vite 8 Rolldown-powered bundling
+		experimentalrolldown: true 
+	},
 
 	// During frontend-only development proxy API calls to the running Rust
 	// backend so hot-reload works without rebuilding the binary.
