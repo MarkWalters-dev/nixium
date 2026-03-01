@@ -110,12 +110,22 @@
 	}
 	let extTab        = $state<'installed' | 'store'>('installed');
 	let storeQuery    = $state('');
-	let storeResults  = $state<StoreEntry[]>([]);
+	// storeRegistry holds raw remote data — never modified by install/uninstall.
+		let storeRegistry = $state<StoreEntry[]>([]);
+		const storeResults = $derived.by(() => {
+			const q = storeQuery.trim().toLowerCase();
+			if (!q) return storeRegistry;
+			return storeRegistry.filter(e =>
+				e.name.toLowerCase().includes(q) ||
+				e.displayName.toLowerCase().includes(q) ||
+				(e.description?.toLowerCase().includes(q) ?? false) ||
+				(e.author?.toLowerCase().includes(q) ?? false)
+			);
+		});
 	let storeLoading  = $state(false);
 	let storeError    = $state('');
 	let installingExt    = $state<string | null>(null);
 	let removingExt      = $state<string | null>(null);
-	let storeSearchedQuery = $state<string | null>(null); // tracks last-run query
 
 	// ── Extension detail view ──────────────────────────────────────────────
 	let extDetailName          = $state<string | null>(null);
@@ -320,16 +330,7 @@
 			else if (extHandles.has(ext.name)) { unloadExtension(ext.name); }
 		}
 	});
-	// Auto-search store as user types (debounced 300 ms)
-	let _storeSearchTimer: ReturnType<typeof setTimeout> | null = null;
-	$effect(() => {
-		// track storeQuery reactively — fires whenever it changes
-		const q = storeQuery;
-		if (!extOpen) return;
-		if (_storeSearchTimer) clearTimeout(_storeSearchTimer);
-		_storeSearchTimer = setTimeout(() => { searchStore(); }, 300);
-		return () => { if (_storeSearchTimer) clearTimeout(_storeSearchTimer); };
-	});
+	// Filtering is handled by the $derived storeResults — no debounce effect needed.
 	// Auto-fetch Ollama models when chat becomes visible with Ollama provider
 	$effect(() => {
 		if (chatVisible && settings.ai.provider === 'ollama' && ollamaModels.length === 0) {
@@ -449,23 +450,11 @@
 
 	async function searchStore() {
 		storeLoading = true; storeError = '';
-		storeSearchedQuery = storeQuery;
 		try {
-			const res = await fetch(`/api/extensions/store/search?q=${encodeURIComponent(storeQuery)}`);
+			const res = await fetch('/api/extensions/store/search?q=');
 			if (res.ok) {
-				const remote: StoreEntry[] = await res.json();
-				// Also include locally installed extensions that match the query.
-				const q = storeQuery.trim().toLowerCase();
-				const localMatches: StoreEntry[] = extList
-					.filter(e =>
-						!q ||
-						e.name.toLowerCase().includes(q) ||
-						e.displayName.toLowerCase().includes(q) ||
-						e.description.toLowerCase().includes(q)
-					)
-					.map(e => ({ name: e.name, displayName: e.displayName, version: e.version, description: e.description, download_url: '' }));
-				const remoteNames = new Set(remote.map(e => e.name));
-				storeResults = [...remote, ...localMatches.filter(e => !remoteNames.has(e.name))];
+				// Only update the registry — storeResults is a $derived filter over it.
+				storeRegistry = await res.json();
 			} else storeError = `Store unavailable (${res.status})`;
 		} catch (e) { storeError = (e as Error).message; }
 		finally { storeLoading = false; }
@@ -683,7 +672,7 @@
 		mcpOpen = false;
 		sidebarVisible = true;
 		fetchExtensions();
-		if (storeResults.length === 0 && !storeLoading) searchStore();
+		if (storeRegistry.length === 0 && !storeLoading) searchStore();
 	}
 
 	async function runFindInFiles() {
@@ -1763,7 +1752,7 @@ RULES:
 					<!-- Installed / Store tabs -->
 					<div class="ext-tabs">
 						<button class="ext-tab" class:ext-tab-active={extTab === 'installed'} onclick={() => extTab = 'installed'}>Installed</button>
-						<button class="ext-tab" class:ext-tab-active={extTab === 'store'} onclick={() => { extTab = 'store'; if (storeResults.length === 0 && !storeLoading) searchStore(); }}>Store</button>
+						<button class="ext-tab" class:ext-tab-active={extTab === 'store'} onclick={() => { extTab = 'store'; if (storeRegistry.length === 0 && !storeLoading) searchStore(); }}>Store</button>
 					</div>
 					{#if extTab === 'installed'}
 						{#if extList.length === 0}
@@ -1803,8 +1792,8 @@ RULES:
 							<div class="ext-store-msg ext-store-err">{storeError}</div>
 						{:else if storeLoading}
 							<div class="ext-store-msg">Searching…</div>
-						{:else if storeResults.length === 0 && storeSearchedQuery !== null}
-							<div class="ext-store-msg">{storeSearchedQuery ? `No results for "${storeSearchedQuery}".` : "No extensions found."}</div>
+						{:else if storeResults.length === 0 && storeRegistry.length > 0}
+							<div class="ext-store-msg">No results for "{storeQuery}".</div>
 						{:else if storeResults.length === 0}
 							<div class="ext-store-msg">Loading…</div>
 						{:else}
