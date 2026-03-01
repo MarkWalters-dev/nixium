@@ -995,11 +995,11 @@
 			if (enabledMcpTools.length > 0) {
 				const toolLines = enabledMcpTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
 				if (settings.ai.provider !== 'anthropic') {
-					// Native tool calls: instruct the AI to call tools proactively rather than guessing.
-					systemPrompt += `\n\nYou have access to the following tools and MUST call them when the user's question is relevant — do NOT guess or make up answers that a tool could provide:\n${toolLines}`;
+					// Native tool calls: mention tools but don't force every reply to be a tool call.
+					systemPrompt += `\n\nYou have access to the following tools. Use them when they would genuinely help answer the user's question — otherwise just reply normally:\n${toolLines}`;
 				} else {
 					// Anthropic / fallback: XML mcp_call protocol.
-					systemPrompt += `\n\nYou have access to the following MCP tools. When the user's question is relevant, call the tool BEFORE answering by emitting:\n<mcp_call name="TOOL_NAME">{"arg":"value"}</mcp_call>\nDo NOT guess or make up answers that a tool could provide. Available tools:\n${toolLines}`;
+					systemPrompt += `\n\nYou have access to the following MCP tools. Use them when they would genuinely help by emitting:\n<mcp_call name="TOOL_NAME">{"arg":"value"}</mcp_call>\nOtherwise just reply normally. Available tools:\n${toolLines}`;
 				}
 			}
 			if (chatInteractionMode === 'plan') {
