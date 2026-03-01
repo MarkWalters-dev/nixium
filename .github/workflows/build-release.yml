@@ -1,0 +1,78 @@
+name: Build & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. v1.2.3). Omit to auto-generate from Cargo.toml + short SHA."
+        required: false
+        default: ""
+
+jobs:
+  build:
+    name: Build nixium
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            CARGO_VER=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            VERSION="v${CARGO_VER}-${SHORT_SHA}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      - name: Set up Node / pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build SvelteKit frontend
+        working-directory: frontend
+        run: pnpm run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Rust binary (release)
+        run: cargo build --release
+
+      - name: Compress binary
+        run: |
+          cd target/release
+          tar -czf nixium-linux-x86_64.tar.gz nixium
+          sha256sum nixium-linux-x86_64.tar.gz > nixium-linux-x86_64.tar.gz.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ !startsWith(steps.version.outputs.version, 'v') || contains(steps.version.outputs.version, '-') }}
+          generate_release_notes: true
+          files: |
+            target/release/nixium-linux-x86_64.tar.gz
+            target/release/nixium-linux-x86_64.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
