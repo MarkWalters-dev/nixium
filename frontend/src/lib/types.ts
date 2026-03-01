@@ -28,6 +28,26 @@ export interface McpToolInfo {
 	inputSchema: Record<string, unknown>;
 }
 
+// ── External MCP server ───────────────────────────────────────────────────────
+export interface ExternalMcpServer {
+	id: string;
+	name: string;
+	command: string;
+	args: string[];
+	env: Record<string, string>;
+	enabled: boolean;
+}
+
+export interface ExternalMcpToolInfo {
+	name: string;
+	displayName: string;
+	description: string;
+	enabled: boolean;
+	inputSchema: Record<string, unknown>;
+	serverId: string;
+	serverName: string;
+}
+
 // ── App settings ──────────────────────────────────────────────────────────────
 export interface AppSettings {
 	ai: { provider: string; apiKey: string; model: string; baseUrl: string };

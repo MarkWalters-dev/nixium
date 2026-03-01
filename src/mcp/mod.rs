@@ -1,3 +1,5 @@
+pub mod external;
+pub mod npm;
 pub mod rust;
 pub mod weather;
 
@@ -143,6 +145,81 @@ pub const BUILTIN_MCP_TOOLS: &[BuiltinMcpMeta] = &[
         }"#,
         readme: rust::README_DOCS,
     },
+    // ── npm tools ────────────────────────────────────────────────────────────
+    BuiltinMcpMeta {
+        name: "lookup_npm_package",
+        display_name: "npm Package Lookup",
+        description: "Fetches metadata for an npm package: latest version, description, license, \
+                      homepage, and repository link.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "package_name": {
+                    "type": "string",
+                    "description": "Exact npm package name, e.g. \"svelte\" or \"@sveltejs/kit\"."
+                }
+            },
+            "required": ["package_name"]
+        }"#,
+        readme: npm::README_LOOKUP,
+    },
+    BuiltinMcpMeta {
+        name: "search_npm_packages",
+        display_name: "npm Package Search",
+        description: "Searches the npm registry by keyword and returns a ranked list of matching packages.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search keywords."
+                },
+                "size": {
+                    "type": "number",
+                    "description": "Results to return (1–10, default 5)."
+                }
+            },
+            "required": ["query"]
+        }"#,
+        readme: npm::README_SEARCH,
+    },
+    BuiltinMcpMeta {
+        name: "get_npm_versions",
+        display_name: "npm Package Version History",
+        description: "Lists published versions of an npm package with dist-tags and publish dates.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "package_name": {
+                    "type": "string",
+                    "description": "npm package name."
+                }
+            },
+            "required": ["package_name"]
+        }"#,
+        readme: npm::README_VERSIONS,
+    },
+    BuiltinMcpMeta {
+        name: "check_bundle_size",
+        display_name: "Bundle Size Check (bundlephobia)",
+        description: "Checks the minified + gzipped bundle size of an npm package using bundlephobia.com.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "package_name": {
+                    "type": "string",
+                    "description": "npm package name."
+                },
+                "version": {
+                    "type": "string",
+                    "description": "Specific version (defaults to latest)."
+                }
+            },
+            "required": ["package_name"]
+        }"#,
+        readme: npm::README_BUNDLE_SIZE,
+    },
+    // ── Weather ───────────────────────────────────────────────────────────────
     BuiltinMcpMeta {
         name: "get_current_temperature",
         display_name: "Current Temperature — Blackfoot, Idaho",
@@ -210,9 +287,13 @@ pub async fn dispatch_mcp_call(
         "get_crate_dependencies" => rust::call_deps(args, client).await,
         "get_crate_versions"     => rust::call_versions(args, client).await,
         "lookup_docs_rs"         => rust::call_docs(args, client).await,
+        "lookup_npm_package"     => npm::call_lookup(args, client).await,
+        "search_npm_packages"    => npm::call_search(args, client).await,
+        "get_npm_versions"       => npm::call_versions(args, client).await,
+        "check_bundle_size"      => npm::call_bundle_size(args, client).await,
         "get_current_temperature" => weather::call(args, client).await,
         other => McpCallResponse {
-            content: format!("Unknown MCP tool: {other}"),
+            content: format!("Unknown built-in MCP tool: {other}"),
             is_error: true,
         },
     }
@@ -222,10 +303,10 @@ pub async fn dispatch_mcp_call(
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// GET /api/mcp/tools  – list all built-in MCP tools with their enabled state.
+/// GET /api/mcp/tools  – list all built-in MCP tools with their enabled state, plus external tools.
 pub async fn api_mcp_list_tools(State(state): State<Arc<AppState>>) -> Response {
     let enabled = state.mcp_enabled.read().await;
-    let tools: Vec<McpToolInfo> = BUILTIN_MCP_TOOLS
+    let mut tools: Vec<McpToolInfo> = BUILTIN_MCP_TOOLS
         .iter()
         .map(|t| {
             let schema = serde_json::from_str(t.input_schema).unwrap_or(serde_json::json!({}));
@@ -238,6 +319,15 @@ pub async fn api_mcp_list_tools(State(state): State<Arc<AppState>>) -> Response 
             }
         })
         .collect();
+    drop(enabled);
+
+    // Append cached external tools.
+    let ext_tools = {
+        let ext = state.external_mcp.read().await;
+        external::get_enabled_tools_for_agent(&ext)
+    };
+    tools.extend(ext_tools);
+
     Json(tools).into_response()
 }
 
@@ -283,27 +373,46 @@ pub async fn api_mcp_tool_readme(Path(name): Path<String>) -> Response {
         .into_response()
 }
 
-/// POST /api/mcp/call  – invoke a named MCP skill by the AI or the user.
+/// POST /api/mcp/call  – invoke a named MCP skill (built-in or external) by the AI or the user.
 pub async fn api_mcp_call(
     State(state): State<Arc<AppState>>,
     Json(req): Json<McpCallRequest>,
 ) -> Response {
-    // Reject disabled tools.
-    {
-        let enabled = state.mcp_enabled.read().await;
-        if !enabled.contains(&req.name) {
-            return ApiError::response(
-                StatusCode::FORBIDDEN,
-                format!("MCP tool '{}' is disabled", req.name),
-            );
-        }
-    }
-
     let client = match reqwest::Client::builder().build() {
         Ok(c) => c,
         Err(e) => return ApiError::response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
 
-    let resp = dispatch_mcp_call(&req.name, &req.arguments, &client).await;
-    Json(resp).into_response()
+    // ── Built-in tool? ───────────────────────────────────────────────────────
+    let is_builtin_enabled = {
+        let enabled = state.mcp_enabled.read().await;
+        enabled.contains(req.name.as_str())
+    };
+    if is_builtin_enabled {
+        let resp = dispatch_mcp_call(&req.name, &req.arguments, &client).await;
+        return Json(resp).into_response();
+    }
+
+    // ── External tool? ───────────────────────────────────────────────────────
+    let ext_server: Option<external::ExternalMcpServer> = {
+        let ext = state.external_mcp.read().await;
+        if let Some(srv_id) = ext.tool_index.get(&req.name).cloned() {
+            if ext.is_tool_enabled(&srv_id, &req.name) {
+                ext.servers.iter().find(|s| s.id == srv_id && s.enabled).cloned()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some(srv) = ext_server {
+        let resp = external::call_tool(&srv, &req.name, &req.arguments).await;
+        return Json(resp).into_response();
+    }
+
+    ApiError::response(
+        StatusCode::FORBIDDEN,
+        format!("MCP tool '{}' is disabled or unknown", req.name),
+    )
 }

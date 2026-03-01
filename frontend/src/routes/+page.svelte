@@ -12,7 +12,7 @@
 	import McpPanel from '$lib/McpPanel.svelte';
 	import { marked } from 'marked';
 	import type { ExtensionManifest } from '$lib/extensions';
-	import { type AppSettings, type PaletteCommand, type Tab, type StatusKind, type McpToolInfo, DEFAULT_SETTINGS, loadSettings, SETTINGS_KEY, ROOT_KEY, RECENT_KEY, AUTOSAVE_KEY, TERM_TAB, CHAT_TAB, MAX_RECENT, loadRecent, saveRecent } from '$lib/types';
+	import { type AppSettings, type PaletteCommand, type Tab, type StatusKind, type McpToolInfo, type ExternalMcpServer, type ExternalMcpToolInfo, DEFAULT_SETTINGS, loadSettings, SETTINGS_KEY, ROOT_KEY, RECENT_KEY, AUTOSAVE_KEY, TERM_TAB, CHAT_TAB, MAX_RECENT, loadRecent, saveRecent } from '$lib/types';
 	import { clickOutside } from '$lib/actions';
 
 
@@ -117,6 +117,68 @@
 		mcpDetailReadmeHtml = '';
 	}
 
+	// ── External MCP servers ──────────────────────────────────────────────────
+	let externalServers         = $state<ExternalMcpServer[]>([]);
+	let externalToolsByServer   = $state<Record<string, ExternalMcpToolInfo[]>>({});
+
+	async function fetchExternalServers() {
+		try {
+			const res = await fetch('/api/mcp/external');
+			if (res.ok) externalServers = await res.json();
+		} catch { /* ignore */ }
+	}
+
+	async function addExternalServer(cfg: Omit<ExternalMcpServer, 'id' | 'enabled'>) {
+		const res = await fetch('/api/mcp/external', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(cfg),
+		});
+		if (!res.ok) throw new Error(await res.text());
+		const srv: ExternalMcpServer = await res.json();
+		externalServers = [...externalServers, srv];
+	}
+
+	async function deleteExternalServer(id: string) {
+		try {
+			await fetch(`/api/mcp/external/${encodeURIComponent(id)}`, { method: 'DELETE' });
+			externalServers = externalServers.filter(s => s.id !== id);
+			const next = { ...externalToolsByServer };
+			delete next[id];
+			externalToolsByServer = next;
+		} catch { /* ignore */ }
+	}
+
+	async function toggleExternalServer(id: string) {
+		try {
+			const res = await fetch(`/api/mcp/external/${encodeURIComponent(id)}/toggle`, { method: 'POST' });
+			if (res.ok) {
+				const updated: ExternalMcpServer = await res.json();
+				externalServers = externalServers.map(s => s.id === id ? updated : s);
+			}
+		} catch { /* ignore */ }
+	}
+
+	async function fetchServerTools(id: string) {
+		try {
+			const res = await fetch(`/api/mcp/external/${encodeURIComponent(id)}/tools`);
+			if (res.ok) {
+				const tools: ExternalMcpToolInfo[] = await res.json();
+				externalToolsByServer = { ...externalToolsByServer, [id]: tools };
+			}
+		} catch { /* ignore */ }
+	}
+
+	async function toggleServerTool(serverId: string, toolName: string) {
+		try {
+			const res = await fetch(`/api/mcp/external/${encodeURIComponent(serverId)}/tools/${encodeURIComponent(toolName)}/toggle`, { method: 'POST' });
+			if (res.ok) {
+				const tools: ExternalMcpToolInfo[] = await res.json();
+				externalToolsByServer = { ...externalToolsByServer, [serverId]: tools };
+			}
+		} catch { /* ignore */ }
+	}
+
 	function openMcp() {
 		mcpOpen    = true;
 		fifOpen    = false;
@@ -124,6 +186,7 @@
 		sidebarVisible = true;
 		menuOpen   = false;
 		if (mcpTools.length === 0) fetchMcpTools();
+		if (externalServers.length === 0) fetchExternalServers();
 	}
 
 	// ── Find in Files ─────────────────────────────────────────────────────────
@@ -1162,9 +1225,16 @@
 					tools={mcpTools}
 					loading={mcpToolsLoading}
 					detailName={mcpDetailName}
+					{externalServers}
+					{externalToolsByServer}
 					onclose={() => (mcpOpen = false)}
 					onopendetail={openMcpDetail}
 					ontoggle={toggleMcpTool}
+					onaddserver={addExternalServer}
+					ondeleteserver={deleteExternalServer}
+					ontoggleserver={toggleExternalServer}
+					onfetchservertools={fetchServerTools}
+					ontoggleservertool={toggleServerTool}
 				/>
 			{:else}
 				<FileBrowser {rootPath} activeFile={activeTabPath} onopen={openFile} />

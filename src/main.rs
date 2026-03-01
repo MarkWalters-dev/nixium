@@ -77,10 +77,16 @@ async fn main() {
         .route("/chats",     post(chats::api_chats_save))
         .route("/chats/:id", axum::routing::delete(chats::api_chats_delete))
         // ── MCP skills ───────────────────────────────────────────────────
-        .route("/mcp/tools",              get(mcp::api_mcp_list_tools))
-        .route("/mcp/tools/:name/toggle", post(mcp::api_mcp_toggle_tool))
-        .route("/mcp/tools/:name/readme", get(mcp::api_mcp_tool_readme))
-        .route("/mcp/call",               post(mcp::api_mcp_call));
+        .route("/mcp/tools",                                      get(mcp::api_mcp_list_tools))
+        .route("/mcp/tools/:name/toggle",                         post(mcp::api_mcp_toggle_tool))
+        .route("/mcp/tools/:name/readme",                         get(mcp::api_mcp_tool_readme))
+        .route("/mcp/call",                                       post(mcp::api_mcp_call))
+        // ── External stdio MCP servers ───────────────────────────────────────
+        .route("/mcp/external",                                   get(mcp::external::api_list_servers).post(mcp::external::api_add_server))
+        .route("/mcp/external/:id",                               axum::routing::delete(mcp::external::api_delete_server))
+        .route("/mcp/external/:id/toggle",                        post(mcp::external::api_toggle_server))
+        .route("/mcp/external/:id/tools",                         get(mcp::external::api_list_server_tools))
+        .route("/mcp/external/:id/tools/:tool/toggle",            post(mcp::external::api_toggle_server_tool));
 
     let app = Router::new()
         .nest("/api", api_router)

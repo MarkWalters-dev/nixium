@@ -2,7 +2,7 @@ use std::{collections::HashSet, env, path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::mcp::BUILTIN_MCP_TOOLS;
+use crate::mcp::{external, BUILTIN_MCP_TOOLS};
 
 /// Immutable server configuration derived from the environment at startup.
 #[derive(Clone, Debug)]
@@ -17,6 +17,8 @@ pub struct AppState {
     /// Models that responded with "does not support tools"; we skip sending
     /// tool definitions to them for the lifetime of the server process.
     pub no_tools_models: Arc<RwLock<HashSet<String>>>,
+    /// External stdio MCP server configuration and runtime cache.
+    pub external_mcp: Arc<RwLock<external::ExternalMcpState>>,
     /// Directory used for all persistent nixium data (chats, etc.).
     /// Resolved from: $NIXIUM_DATA_DIR > $XDG_CONFIG_HOME/nixium > ~/.config/nixium
     pub data_dir: PathBuf,
@@ -48,7 +50,15 @@ impl AppState {
         };
         info!("Data directory: {:?} (override via $NIXIUM_DATA_DIR)", data_dir);
 
-        Self { prefix, mcp_enabled, no_tools_models: Arc::new(RwLock::new(HashSet::new())), data_dir }
+        // Load persisted external MCP server configs.
+        let ext_servers = external::load_servers(&data_dir);
+        info!("External MCP servers loaded: {}", ext_servers.len());
+        let external_mcp = Arc::new(RwLock::new(external::ExternalMcpState {
+            servers: ext_servers,
+            ..Default::default()
+        }));
+
+        Self { prefix, mcp_enabled, no_tools_models: Arc::new(RwLock::new(HashSet::new())), external_mcp, data_dir }
     }
 
     /// Resolve a client-supplied path to an absolute [`PathBuf`] on the host.

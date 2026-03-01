@@ -440,8 +440,25 @@ async fn exec_tool(
             }
         }
         other => {
-            let r = mcp::dispatch_mcp_call(other, args, client).await;
-            ToolOutput { content: r.content, is_error: r.is_error, file_written: None }
+            // Try built-in tools first.
+            if mcp::BUILTIN_MCP_TOOLS.iter().any(|t| t.name == other) {
+                let r = mcp::dispatch_mcp_call(other, args, client).await;
+                return ToolOutput { content: r.content, is_error: r.is_error, file_written: None };
+            }
+            // Try external stdio MCP servers.
+            let ext_server: Option<mcp::external::ExternalMcpServer> = {
+                let ext = state.external_mcp.read().await;
+                if let Some(srv_id) = ext.tool_index.get(other).cloned() {
+                    if ext.is_tool_enabled(&srv_id, other) {
+                        ext.servers.iter().find(|s| s.id == srv_id && s.enabled).cloned()
+                    } else { None }
+                } else { None }
+            };
+            if let Some(srv) = ext_server {
+                let r = mcp::external::call_tool(&srv, other, args).await;
+                return ToolOutput { content: r.content, is_error: r.is_error, file_written: None };
+            }
+            ToolOutput { content: format!("Unknown MCP tool: {other}"), is_error: true, file_written: None }
         }
     }
 }
@@ -641,16 +658,24 @@ async fn run_agent_loop(
     let is_agent = req.mode == "agent";
 
     // Fetch live MCP tool state from AppState (enabled flags may have changed)
+    // Ensure external server tool caches are populated before building the tool list.
+    mcp::external::ensure_cache(&state).await;
+
     let mcp_tools: Vec<mcp::McpToolInfo> = {
         let enabled = state.mcp_enabled.read().await;
-        mcp::BUILTIN_MCP_TOOLS.iter().map(|t| {
+        let mut tools: Vec<mcp::McpToolInfo> = mcp::BUILTIN_MCP_TOOLS.iter().map(|t| {
             let schema = serde_json::from_str(t.input_schema).unwrap_or(serde_json::json!({}));
             mcp::McpToolInfo {
                 name: t.name.to_string(), display_name: t.display_name.to_string(),
                 description: t.description.to_string(), enabled: enabled.contains(t.name),
                 input_schema: schema,
             }
-        }).collect()
+        }).collect();
+        drop(enabled);
+        // Append enabled external tools (already cached by ensure_cache above).
+        let ext = state.external_mcp.read().await;
+        tools.extend(mcp::external::get_enabled_tools_for_agent(&ext));
+        tools
     };
 
     let system_prompt = build_system_prompt(&req.mode, &req.provider, &mcp_tools, req.context_file.as_ref());
