@@ -17,6 +17,9 @@ pub struct AppState {
     /// Models that responded with "does not support tools"; we skip sending
     /// tool definitions to them for the lifetime of the server process.
     pub no_tools_models: Arc<RwLock<HashSet<String>>>,
+    /// Directory used for all persistent nixium data (chats, etc.).
+    /// Resolved from: $NIXIUM_DATA_DIR > $XDG_CONFIG_HOME/nixium > ~/.config/nixium
+    pub data_dir: PathBuf,
 }
 
 impl AppState {
@@ -31,7 +34,21 @@ impl AppState {
         let mcp_enabled = Arc::new(RwLock::new(
             BUILTIN_MCP_TOOLS.iter().map(|t| t.name.to_string()).collect::<HashSet<_>>(),
         ));
-        Self { prefix, mcp_enabled, no_tools_models: Arc::new(RwLock::new(HashSet::new())) }
+
+        let data_dir = if let Ok(d) = env::var("NIXIUM_DATA_DIR") {
+            PathBuf::from(d)
+        } else {
+            let config_home = env::var("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                    PathBuf::from(home).join(".config")
+                });
+            config_home.join("nixium")
+        };
+        info!("Data directory: {:?} (override via $NIXIUM_DATA_DIR)", data_dir);
+
+        Self { prefix, mcp_enabled, no_tools_models: Arc::new(RwLock::new(HashSet::new())), data_dir }
     }
 
     /// Resolve a client-supplied path to an absolute [`PathBuf`] on the host.

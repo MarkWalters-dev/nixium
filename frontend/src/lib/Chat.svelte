@@ -28,6 +28,7 @@
 		onsend,
 		onnewchat,
 		onswitchchat,
+		ondeletechat,
 		onclose,
 		onmovetotab,
 		onmovetopanel,
@@ -48,6 +49,7 @@
 		onsend: (text: string) => void;
 		onnewchat: () => void;
 		onswitchchat: (id: string) => void;
+		ondeletechat?: (id: string) => void;
 		onclose: () => void;
 		onmovetotab: () => void;
 		onmovetopanel: () => void;
@@ -145,14 +147,19 @@
 				<div class="history-empty">No previous chats</div>
 			{:else}
 				{#each threads as t (t.id)}
-					<button
-						class="history-item"
-						class:active={t.id === activeChatId}
-						onclick={() => { onswitchchat(t.id); historyOpen = false; }}
-					>
-						<span class="history-item-title">{t.title}</span>
-						<span class="history-item-time">{formatDate(t.createdAt)}</span>
-					</button>
+					<div class="history-row" class:active={t.id === activeChatId}>
+						<button
+							class="history-item"
+							onclick={() => { onswitchchat(t.id); historyOpen = false; }}
+						>
+							<span class="history-item-title">{t.title}</span>
+							<span class="history-item-time">{formatDate(t.createdAt)}</span>
+						</button>
+						{#if ondeletechat}
+							<button class="history-delete icon-btn" title="Delete chat"
+								onclick={(e) => { e.stopPropagation(); ondeletechat!(t.id); }}>×</button>
+						{/if}
+					</div>
 				{/each}
 			{/if}
 		</div>
@@ -285,11 +292,16 @@
 
 	.history-panel { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 4px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 	.history-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 24px 0; }
-	.history-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: var(--radius); background: none; border: none; cursor: pointer; text-align: left; color: var(--text); transition: background .1s; }
-	.history-item:hover { background: var(--hover-bg); }
-	.history-item.active { background: var(--active-bg); outline: 1px solid var(--border); }
+	.history-row { display: flex; align-items: center; border-radius: var(--radius); }
+	.history-row.active { background: var(--active-bg); outline: 1px solid var(--border); }
+	.history-row:hover { background: var(--hover-bg); }
+	.history-row.active:hover { background: var(--active-bg); }
+	.history-item { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: none; border: none; cursor: pointer; text-align: left; color: var(--text); }
 	.history-item-title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.history-item-time { font-size: 10px; color: var(--muted); }
+	.history-delete { flex: 0 0 auto; opacity: 0; background: none; border: none; cursor: pointer; color: var(--muted); padding: 2px 7px; font-size: 15px; line-height: 1; border-radius: var(--radius); transition: opacity .1s, color .1s; }
+	.history-row:hover .history-delete { opacity: 1; }
+	.history-delete:hover { color: var(--error, #f38ba8); background: var(--hover-bg); }
 
 	.chat-messages { flex: 1 1 auto; overflow-y: auto; padding: 8px 0; display: flex; flex-direction: column; gap: 2px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 

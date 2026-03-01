@@ -39,7 +39,6 @@
 	const _initChatId = _genChatId();
 	let chatThreads     = $state<ChatThread[]>([]);
 	let activeChatId    = $state(_initChatId);
-	let _chatsLoaded    = $state(false);
 	let chatLoading     = $state(false);
 	let chatUseContext  = $state(false);
 	let chatVisible     = $state(false);
@@ -171,7 +170,7 @@
 	$effect(() => { localStorage.setItem(AUTOSAVE_KEY, autosave ? '1' : '0'); });
 	$effect(() => { localStorage.setItem('nixium-statusbar', statusBarVisible ? '1' : '0'); });
 	$effect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); });
-	// Load chat threads from server on mount; save (debounced) on every change
+	// Load chat threads from server on mount
 	onMount(async () => {
 		try {
 			const res = await fetch('/api/chats');
@@ -188,24 +187,15 @@
 			}
 		} catch {
 			chatThreads = [{ id: _initChatId, title: 'New Chat', messages: [], createdAt: Date.now() }];
-		} finally {
-			_chatsLoaded = true;
 		}
 	});
-	let _chatSaveTimer: ReturnType<typeof setTimeout> | null = null;
-	$effect(() => {
-		void chatThreads;
-		if (!_chatsLoaded) return;
-		if (_chatSaveTimer) clearTimeout(_chatSaveTimer);
-		_chatSaveTimer = setTimeout(() => {
-			fetch('/api/chats', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(chatThreads),
-			}).catch(() => {});
-		}, 800);
-		return () => { if (_chatSaveTimer) clearTimeout(_chatSaveTimer); };
-	});
+	function saveChatThreads() {
+		fetch('/api/chats', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(chatThreads),
+		}).catch(() => {});
+	}
 	// Apply editor option toggles to the live editor whenever settings change
 	$effect(() => {
 		const ext = settings.nixiumOptions;
@@ -596,8 +586,21 @@
 		const id = _genChatId();
 		chatThreads = [{ id, title: 'New Chat', messages: [], createdAt: Date.now() }, ...chatThreads];
 		activeChatId = id;
+		saveChatThreads();
 	}
 	function switchChat(id: string) { activeChatId = id; }
+	function deleteChat(id: string) {
+		const remaining = chatThreads.filter(t => t.id !== id);
+		if (remaining.length === 0) {
+			const newId = _genChatId();
+			chatThreads = [{ id: newId, title: 'New Chat', messages: [], createdAt: Date.now() }];
+			activeChatId = newId;
+		} else {
+			chatThreads = remaining;
+			if (activeChatId === id) activeChatId = remaining[0].id;
+		}
+		fetch(`/api/chats/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+	}
 
 	async function sendChat(text: string) {
 		const tidx = chatThreads.findIndex(t => t.id === activeChatId);
@@ -712,6 +715,7 @@
 			}];
 		} finally {
 			chatLoading = false;
+			saveChatThreads();
 		}
 	}
 
@@ -1358,6 +1362,7 @@
 					onsend={sendChat}
 					onnewchat={newChat}
 					onswitchchat={switchChat}
+					ondeletechat={deleteChat}
 					onclose={() => setChatVisible(false)}
 					onmovetotab={() => setChatMode('tab')}
 					onmovetopanel={() => setChatMode('panel')}
@@ -1384,6 +1389,7 @@
 					onsend={sendChat}
 					onnewchat={newChat}
 					onswitchchat={switchChat}
+					ondeletechat={deleteChat}
 					onclose={() => setChatVisible(false)}
 					onmovetotab={() => setChatMode('tab')}
 					onmovetopanel={() => setChatMode('panel')}
