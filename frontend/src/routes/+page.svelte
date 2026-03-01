@@ -113,9 +113,16 @@
 	// storeRegistry holds raw remote data — never modified by install/uninstall.
 		let storeRegistry = $state<StoreEntry[]>([]);
 		const storeResults = $derived.by(() => {
+			// Merge remote registry with locally-installed exts not in registry.
+			// storeRegistry entries are permanent — uninstall never removes them.
+			const registryNames = new Set(storeRegistry.map((e: StoreEntry) => e.name));
+			const localOnly: StoreEntry[] = extList
+				.filter(e => !registryNames.has(e.name))
+				.map(e => ({ name: e.name, displayName: e.displayName, version: e.version, description: e.description, download_url: '' }));
+			const all = [...storeRegistry, ...localOnly];
 			const q = storeQuery.trim().toLowerCase();
-			if (!q) return storeRegistry;
-			return storeRegistry.filter(e =>
+			if (!q) return all;
+			return all.filter(e =>
 				e.name.toLowerCase().includes(q) ||
 				e.displayName.toLowerCase().includes(q) ||
 				(e.description?.toLowerCase().includes(q) ?? false) ||
@@ -1795,7 +1802,7 @@ RULES:
 						{:else if storeResults.length === 0 && storeRegistry.length > 0}
 							<div class="ext-store-msg">No results for "{storeQuery}".</div>
 						{:else if storeResults.length === 0}
-							<div class="ext-store-msg">Loading…</div>
+							<div class="ext-store-msg">{storeError || 'No extensions found.'}</div>
 						{:else}
 							{#each storeResults as entry}
 								{@const alreadyInstalled = extList.some(e => e.name === entry.name)}
