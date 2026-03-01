@@ -34,6 +34,7 @@
 	let extTab       = $state<'installed' | 'store'>('installed');
 	let storeQuery   = $state('');
 	let storeLoading = $state(false);
+	let storeLoaded  = $state(false);
 	let storeError   = $state('');
 
 	const storeResults = $derived.by(() => {
@@ -48,7 +49,7 @@
 	});
 
 	export async function loadStore() {
-		if (storeRegistry.length > 0 || storeLoading) return;
+		if (storeLoaded || storeLoading) return;
 		storeLoading = true; storeError = '';
 		try {
 			const res = await fetch('/api/extensions/store/search?q=');
@@ -57,6 +58,7 @@
 				const updated = new Map(storeRegistry.map((e: StoreEntry) => [e.name, e]));
 				for (const e of remote) updated.set(e.name, e);
 				storeRegistry = [...updated.values()];
+				storeLoaded = true;
 			} else storeError = `Store unavailable (${res.status})`;
 		} catch (e) { storeError = (e as Error).message; }
 		finally { storeLoading = false; }
