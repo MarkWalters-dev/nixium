@@ -11,10 +11,47 @@
 	let fitAddon: FitAddon;
 	let ws: WebSocket | null = null;
 	let resizeObs: ResizeObserver;
+	let destroyed = false;
+	let retryTimer: ReturnType<typeof setTimeout> | null = null;
+	let retryDelay = 1000; // ms, doubles each attempt up to 10s
 
 	export function focus() { term?.focus(); }
 	export function sendText(text: string) {
 		if (ws?.readyState === WebSocket.OPEN) ws.send(text);
+	}
+
+	function connect() {
+		if (destroyed) return;
+		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+		const cwdParam = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
+		ws = new WebSocket(`${proto}//${location.host}/api/terminal/ws${cwdParam}`);
+		ws.binaryType = 'arraybuffer';
+
+		ws.addEventListener('open', () => {
+			retryDelay = 1000; // reset backoff on successful connect
+			sendResize();
+		});
+
+		ws.addEventListener('message', (ev) => {
+			if (ev.data instanceof ArrayBuffer) {
+				term.write(new Uint8Array(ev.data));
+			} else {
+				term.write(ev.data as string);
+			}
+		});
+
+		ws.addEventListener('close', () => {
+			if (destroyed) return;
+			term.writeln(`\r\n\x1b[33m[disconnected — reconnecting in ${retryDelay / 1000}s…]\x1b[0m`);
+			retryTimer = setTimeout(() => {
+				retryDelay = Math.min(retryDelay * 2, 10_000);
+				connect();
+			}, retryDelay);
+		});
+
+		ws.addEventListener('error', () => {
+			// close event fires right after, which handles the retry
+		});
 	}
 
 	onMount(() => {
@@ -42,21 +79,7 @@ white:'#bac2de', brightWhite:'#a6adc8',
 		term.open(container!);
 		fitAddon.fit();
 
-		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		const cwdParam = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
-		ws = new WebSocket(`${proto}//${location.host}/api/terminal/ws${cwdParam}`);
-		ws.binaryType = 'arraybuffer';
-
-		ws.addEventListener('open', () => sendResize());
-		ws.addEventListener('message', (ev) => {
-			if (ev.data instanceof ArrayBuffer) {
-				term.write(new Uint8Array(ev.data));
-			} else {
-				term.write(ev.data as string);
-			}
-		});
-		ws.addEventListener('close', () => term.writeln('\r\n\x1b[31m[connection closed]\x1b[0m'));
-		ws.addEventListener('error', () => term.writeln('\r\n\x1b[31m[websocket error]\x1b[0m'));
+		connect();
 
 		term.onData((data) => { if (ws?.readyState === WebSocket.OPEN) ws.send(data); });
 
@@ -64,6 +87,8 @@ white:'#bac2de', brightWhite:'#a6adc8',
 		resizeObs.observe(container!);
 
 		return () => {
+			destroyed = true;
+			if (retryTimer) clearTimeout(retryTimer);
 			resizeObs?.disconnect();
 			ws?.close();
 			term?.dispose();
