@@ -793,9 +793,10 @@ async fn api_ext_store_install(Json(req): Json<ExtInstallRequest>) -> Response {
                 })
             });
 
-        // After stripping the archive prefix, paths look like:
-        //   "github/manifest.json", "word-count/index.js", "README.md", …
-        // Only extract files inside "<name>/" and strip that prefix.
+        // After stripping the archive prefix, paths are one of:
+        //   "github/manifest.json"  — whole-repo zip (has <name>/ subdir)
+        //   "manifest.json"          — per-extension flat zip (no subdir)
+        // Accept either; for the subdir form, strip the <name>/ prefix.
         let ext_prefix = format!("{}/", req.name);
         for i in 0..archive.len() {
             let mut file = match archive.by_index(i) {
@@ -803,15 +804,19 @@ async fn api_ext_store_install(Json(req): Json<ExtInstallRequest>) -> Response {
                 Err(_) => continue,
             };
             let raw_name = file.name().to_string();
-            // Strip archive-level prefix (e.g. "nixium-extensions-main/")
+            // Strip archive-level prefix (e.g. "nixium-extensions-master/")
             let after_archive = match &prefix {
                 Some(pfx) => raw_name.strip_prefix(pfx).unwrap_or(&raw_name),
                 None => &raw_name,
             };
-            // Only files inside the extension's own subdirectory
-            let rel_name = match after_archive.strip_prefix(&ext_prefix) {
-                Some(r) => r.to_string(),
-                None => continue,
+            let rel_name = if let Some(r) = after_archive.strip_prefix(&ext_prefix) {
+                // Whole-repo zip: "github/manifest.json" → "manifest.json"
+                r.to_string()
+            } else if !after_archive.contains('/') {
+                // Flat zip: "manifest.json" already at root
+                after_archive.to_string()
+            } else {
+                continue // belongs to a different extension directory
             };
             if rel_name.is_empty() || rel_name.ends_with('/') || rel_name.contains("..") {
                 continue;
@@ -863,10 +868,12 @@ async fn api_ext_store_install(Json(req): Json<ExtInstallRequest>) -> Response {
                 Some(pfx) => raw_name.strip_prefix(pfx).unwrap_or(raw_name),
                 None => raw_name,
             };
-            // Only extract files inside "<name>/"
-            let rel_name = match after_archive.strip_prefix(&ext_prefix) {
-                Some(r) => r.to_string(),
-                None => continue,
+            let rel_name = if let Some(r) = after_archive.strip_prefix(&ext_prefix) {
+                r.to_string()
+            } else if !after_archive.contains('/') {
+                after_archive.to_string()
+            } else {
+                continue
             };
             if rel_name.is_empty() || rel_name.ends_with('/') || rel_name.contains("..") {
                 continue;
