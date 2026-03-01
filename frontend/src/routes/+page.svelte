@@ -47,8 +47,11 @@
 
 	$effect(() => {
 		if (chatLoading) {
-			const secs = (settings.ai.timeoutSecs || 120);
-			chatWarningTimer = setTimeout(() => { chatWarning = true; }, secs * 1000);
+			const timeoutSecs = (settings.ai.timeoutSecs || 120);
+			// Warn at half the timeout, clamped to 15–45 s, so the banner always
+			// appears well before the backend hard-cutoff fires.
+			const warnAfterMs = Math.min(45, Math.max(15, timeoutSecs * 0.5)) * 1000;
+			chatWarningTimer = setTimeout(() => { chatWarning = true; }, warnAfterMs);
 		} else {
 			if (chatWarningTimer !== null) { clearTimeout(chatWarningTimer); chatWarningTimer = null; }
 			chatWarning = false;
@@ -687,10 +690,11 @@
 
 	function continueChat() {
 		chatWarning = false;
-		// Reset the timer so the warning appears again after another full interval.
+		// Reset the warn timer so the banner reappears after another interval.
 		if (chatWarningTimer !== null) { clearTimeout(chatWarningTimer); chatWarningTimer = null; }
-		const secs = (settings.ai.timeoutSecs || 120);
-		chatWarningTimer = setTimeout(() => { chatWarning = true; }, secs * 1000);
+		const timeoutSecs = (settings.ai.timeoutSecs || 120);
+		const warnAfterMs = Math.min(45, Math.max(15, timeoutSecs * 0.5)) * 1000;
+		chatWarningTimer = setTimeout(() => { chatWarning = true; }, warnAfterMs);
 	}
 
 	async function sendChat(text: string) {

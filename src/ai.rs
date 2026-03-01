@@ -511,7 +511,9 @@ async fn do_openai_turn(
     if !api_key.is_empty() { req = req.header("authorization", format!("Bearer {api_key}")); }
 
     let upstream = match req.send().await {
-        Err(e) => return TurnOutput { text: String::new(), tool_calls: vec![], function_confusion: false, tools_not_supported: false, error: Some(format!("Cannot reach {base}: {e}")) },
+        Err(e) => return TurnOutput { text: String::new(), tool_calls: vec![], function_confusion: false, tools_not_supported: false, error: Some(format!(
+            "Cannot reach {base}: {e}\n\nIf using Ollama, ensure it is running (`ollama serve`) and that the \"Base URL\" in Settings points to the host where nixium itself is running (use `localhost` if on the same machine, not an external IP)."
+        )) },
         Ok(r) => r,
     };
 
