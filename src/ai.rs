@@ -823,9 +823,14 @@ pub async fn api_ai_agent(
 
     let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let timeout = if req.timeout_secs == 0 { 120 } else { req.timeout_secs };
+    // Use only a connect timeout — NOT a full request timeout.  A total timeout
+    // kills streaming responses mid-stream and also interferes with localhost DNS
+    // fallback (systems that try ::1 before 127.0.0.1 hit the deadline before the
+    // IPv4 attempt).  The user-facing "stop" button drives cancellation via the
+    // AbortController on the frontend; the warning banner is driven by the
+    // timeoutSecs setting there.
     let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(timeout))
+        .connect_timeout(std::time::Duration::from_secs(10))
         .build() {
         Ok(c) => c,
         Err(e) => return ApiError::response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
