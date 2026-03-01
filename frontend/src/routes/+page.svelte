@@ -113,16 +113,10 @@
 	// storeRegistry holds raw remote data — never modified by install/uninstall.
 		let storeRegistry = $state<StoreEntry[]>([]);
 		const storeResults = $derived.by(() => {
-			// Merge remote registry with locally-installed exts not in registry.
-			// storeRegistry entries are permanent — uninstall never removes them.
-			const registryNames = new Set(storeRegistry.map((e: StoreEntry) => e.name));
-			const localOnly: StoreEntry[] = extList
-				.filter(e => !registryNames.has(e.name))
-				.map(e => ({ name: e.name, displayName: e.displayName, version: e.version, description: e.description, download_url: '' }));
-			const all = [...storeRegistry, ...localOnly];
+			// storeRegistry is the single source — seeded from installed + remote.
 			const q = storeQuery.trim().toLowerCase();
-			if (!q) return all;
-			return all.filter(e =>
+			if (!q) return storeRegistry;
+			return storeRegistry.filter(e =>
 				e.name.toLowerCase().includes(q) ||
 				e.displayName.toLowerCase().includes(q) ||
 				(e.description?.toLowerCase().includes(q) ?? false) ||
@@ -396,7 +390,17 @@
 	async function fetchExtensions() {
 		try {
 			const res = await fetch('/api/extensions');
-			if (res.ok) extList = await res.json();
+			if (res.ok) {
+				const fetched: import('$lib/extensions').ExtensionManifest[] = await res.json();
+				extList = fetched;
+				// Seed storeRegistry with any installed extension not already there.
+				// These entries are permanent — uninstall does NOT remove them.
+				const known = new Set(storeRegistry.map((e: StoreEntry) => e.name));
+				const newEntries: StoreEntry[] = fetched
+					.filter(e => !known.has(e.name))
+					.map(e => ({ name: e.name, displayName: e.displayName, version: e.version, description: e.description, download_url: '' }));
+				if (newEntries.length) storeRegistry = [...storeRegistry, ...newEntries];
+			}
 		} catch { /* ignore */ }
 	}
 
