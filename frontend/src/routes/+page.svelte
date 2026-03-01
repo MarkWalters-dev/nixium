@@ -113,8 +113,9 @@
 	let storeResults  = $state<StoreEntry[]>([]);
 	let storeLoading  = $state(false);
 	let storeError    = $state('');
-	let installingExt = $state<string | null>(null);
-	let removingExt   = $state<string | null>(null);
+	let installingExt    = $state<string | null>(null);
+	let removingExt      = $state<string | null>(null);
+	let storeSearchedQuery = $state<string | null>(null); // tracks last-run query
 
 	// ── Extension detail view ──────────────────────────────────────────────
 	let extDetailName          = $state<string | null>(null);
@@ -319,6 +320,16 @@
 			else if (extHandles.has(ext.name)) { unloadExtension(ext.name); }
 		}
 	});
+	// Auto-search store as user types (debounced 300 ms)
+	let _storeSearchTimer: ReturnType<typeof setTimeout> | null = null;
+	$effect(() => {
+		// track storeQuery reactively — fires whenever it changes
+		const q = storeQuery;
+		if (!extOpen) return;
+		if (_storeSearchTimer) clearTimeout(_storeSearchTimer);
+		_storeSearchTimer = setTimeout(() => { searchStore(); }, 300);
+		return () => { if (_storeSearchTimer) clearTimeout(_storeSearchTimer); };
+	});
 	// Auto-fetch Ollama models when chat becomes visible with Ollama provider
 	$effect(() => {
 		if (chatVisible && settings.ai.provider === 'ollama' && ollamaModels.length === 0) {
@@ -389,7 +400,16 @@
 
 	async function openExtDetail(name: string) {
 		extDetailName = name;
-		extDetailStoreEntry = storeResults.find(e => e.name === name) ?? null;
+		// Preserve a StoreEntry so the Install button can appear after uninstall.
+		const fromStore = storeResults.find(e => e.name === name);
+		if (fromStore) {
+			extDetailStoreEntry = fromStore;
+		} else {
+			const installed = extList.find(e => e.name === name);
+			extDetailStoreEntry = installed
+				? { name: installed.name, displayName: installed.displayName, version: installed.version, description: installed.description, download_url: '' }
+				: null;
+		}
 		extDetailReadmeHtml = '';
 		extDetailReadmeLoading = true;
 		try {
@@ -429,21 +449,21 @@
 
 	async function searchStore() {
 		storeLoading = true; storeError = '';
+		storeSearchedQuery = storeQuery;
 		try {
 			const res = await fetch(`/api/extensions/store/search?q=${encodeURIComponent(storeQuery)}`);
 			if (res.ok) {
 				const remote: StoreEntry[] = await res.json();
 				// Also include locally installed extensions that match the query.
 				const q = storeQuery.trim().toLowerCase();
-				const localMatches: StoreEntry[] = q
-					? extList
-						.filter(e =>
-							e.name.toLowerCase().includes(q) ||
-							e.displayName.toLowerCase().includes(q) ||
-							e.description.toLowerCase().includes(q)
-						)
-						.map(e => ({ name: e.name, displayName: e.displayName, version: e.version, description: e.description, download_url: '' }))
-					: [];
+				const localMatches: StoreEntry[] = extList
+					.filter(e =>
+						!q ||
+						e.name.toLowerCase().includes(q) ||
+						e.displayName.toLowerCase().includes(q) ||
+						e.description.toLowerCase().includes(q)
+					)
+					.map(e => ({ name: e.name, displayName: e.displayName, version: e.version, description: e.description, download_url: '' }));
 				const remoteNames = new Set(remote.map(e => e.name));
 				storeResults = [...remote, ...localMatches.filter(e => !remoteNames.has(e.name))];
 			} else storeError = `Store unavailable (${res.status})`;
@@ -1783,10 +1803,10 @@ RULES:
 							<div class="ext-store-msg ext-store-err">{storeError}</div>
 						{:else if storeLoading}
 							<div class="ext-store-msg">Searching…</div>
-						{:else if storeResults.length === 0 && storeQuery.trim()}
-							<div class="ext-store-msg">No results for "{storeQuery}".</div>
+						{:else if storeResults.length === 0 && storeSearchedQuery !== null}
+							<div class="ext-store-msg">{storeSearchedQuery ? `No results for "${storeSearchedQuery}".` : "No extensions found."}</div>
 						{:else if storeResults.length === 0}
-							<div class="ext-store-msg">Enter a search term or press ⌕ to browse all.</div>
+							<div class="ext-store-msg">Loading…</div>
 						{:else}
 							{#each storeResults as entry}
 								{@const alreadyInstalled = extList.some(e => e.name === entry.name)}
@@ -1896,11 +1916,15 @@ RULES:
 											onclick={() => removeExtension(extDetailName!)}
 										>{ removingExt === extDetailName ? 'Removing…' : 'Uninstall' }</button>
 									{:else if detailStore}
-										<!-- Install from store -->
-										<button class="ext-detail-btn ext-detail-btn-primary"
-											disabled={installingExt === extDetailName}
-											onclick={async () => { await installExtension(detailStore); closeExtDetail(); }}
-										>{ installingExt === extDetailName ? 'Installing…' : 'Install' }</button>
+										<!-- Install from store (only if we have a download URL) -->
+										{#if detailStore.download_url}
+											<button class="ext-detail-btn ext-detail-btn-primary"
+												disabled={installingExt === extDetailName}
+												onclick={async () => { await installExtension(detailStore); closeExtDetail(); }}
+											>{ installingExt === extDetailName ? 'Installing…' : 'Install' }</button>
+										{:else}
+											<span class="ext-detail-local-badge">Local extension</span>
+										{/if}
 									{/if}
 								</div>
 							</div>
