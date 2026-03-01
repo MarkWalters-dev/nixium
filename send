@@ -1,9 +1,12 @@
-[[ "$(hostname)" == "cb3" ]] && {
+[[ "$HOSTNAME" == "cb3" ]] && {
   cd frontend
-  yes|npx npm-check-updates -u --filter vite --pre 1 && yes|npx npm-check-updates -u --reject vite
+  npx npm-check-updates -u --filter "vite, @sveltejs/vite-plugin-svelte" --target @beta
+  npx npm-check-updates -u --reject "vite, @sveltejs/vite-plugin-svelte"
   cd ..
   git add .
   git commit -m .
   git push
-  ssh p72-z "cd code/nixium;rm frontend/pnpm-lock.yaml;git clean -fd;git pull"  
+  cmd="cd code/nixium;rm frontend/pnpm-lock.yaml;git clean -fd;git pull"
+  ssh p72-z "$cmd" || \
+  ssh p72 "$cmd"
 }
