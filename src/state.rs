@@ -14,6 +14,9 @@ pub struct AppState {
     pub prefix: Option<String>,
     /// Set of MCP tool names that are currently enabled (toggled by the UI).
     pub mcp_enabled: Arc<RwLock<HashSet<String>>>,
+    /// Models that responded with "does not support tools"; we skip sending
+    /// tool definitions to them for the lifetime of the server process.
+    pub no_tools_models: Arc<RwLock<HashSet<String>>>,
 }
 
 impl AppState {
@@ -28,7 +31,7 @@ impl AppState {
         let mcp_enabled = Arc::new(RwLock::new(
             BUILTIN_MCP_TOOLS.iter().map(|t| t.name.to_string()).collect::<HashSet<_>>(),
         ));
-        Self { prefix, mcp_enabled }
+        Self { prefix, mcp_enabled, no_tools_models: Arc::new(RwLock::new(HashSet::new())) }
     }
 
     /// Resolve a client-supplied path to an absolute [`PathBuf`] on the host.

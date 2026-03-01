@@ -656,7 +656,13 @@ async fn run_agent_loop(
     let system_prompt = build_system_prompt(&req.mode, &req.provider, &mcp_tools, req.context_file.as_ref());
 
     let mut history: Vec<serde_json::Value> = req.messages.clone();
-    let mut force_xml = false;
+
+    // If we already learned this model doesn't support tools, skip native tools from the start.
+    let model_known_no_tools = state.no_tools_models.read().await.contains(&req.model);
+    let mut force_xml = model_known_no_tools;
+    if model_known_no_tools {
+        info!("AI skipping tools for {} (known unsupported)", req.model);
+    }
 
     for depth in 0..MAX_AGENT_TURNS {
         let use_native = !force_xml && !is_anthropic && (is_agent || mcp_tools.iter().any(|t| t.enabled));
@@ -677,6 +683,11 @@ async fn run_agent_loop(
         if turn.tools_not_supported || turn.function_confusion {
             let _ = tx.send(sse(&AgentEvent::TurnAbort));
             force_xml = true;
+            if turn.tools_not_supported {
+                // Persist so future requests to this model skip tools immediately.
+                info!("AI marking {} as no-tools model", req.model);
+                state.no_tools_models.write().await.insert(req.model.clone());
+            }
             continue;
         }
 
