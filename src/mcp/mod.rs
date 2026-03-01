@@ -1,3 +1,4 @@
+pub mod rust;
 pub mod weather;
 
 use std::sync::Arc;
@@ -28,6 +29,23 @@ pub struct BuiltinMcpMeta {
 }
 
 pub const BUILTIN_MCP_TOOLS: &[BuiltinMcpMeta] = &[
+    BuiltinMcpMeta {
+        name: "lookup_rust_crate",
+        display_name: "Rust Crate Lookup (crates.io)",
+        description: "Fetches metadata for a Rust crate from crates.io: latest version, description, \
+                      download count, docs link, and a ready-to-paste Cargo.toml snippet.",
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "crate_name": {
+                    "type": "string",
+                    "description": "The exact crate name to look up on crates.io."
+                }
+            },
+            "required": ["crate_name"]
+        }"#,
+        readme: rust::README,
+    },
     BuiltinMcpMeta {
         name: "get_current_temperature",
         display_name: "Current Temperature — Blackfoot, Idaho",
@@ -89,6 +107,7 @@ pub async fn dispatch_mcp_call(
     client: &reqwest::Client,
 ) -> McpCallResponse {
     match name {
+        "lookup_rust_crate" => rust::call(args, client).await,
         "get_current_temperature" => weather::call(args, client).await,
         other => McpCallResponse {
             content: format!("Unknown MCP tool: {other}"),
