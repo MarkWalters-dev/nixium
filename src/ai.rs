@@ -6,6 +6,7 @@ use axum::{
 };
 use futures_util::TryStreamExt;
 use serde::Deserialize;
+use tracing::info;
 
 use crate::error::ApiError;
 
@@ -80,6 +81,13 @@ pub async fn api_ollama_models(
 
 /// POST /api/ai/chat  – proxy to an AI provider and stream the SSE response
 pub async fn api_ai_chat(Json(req): Json<AiChatRequest>) -> Response {
+    info!(
+        "AI CHAT provider={} model={} messages={} tools={}",
+        req.provider,
+        req.model,
+        req.messages.len(),
+        req.tools.is_some(),
+    );
     let client = match reqwest::Client::builder().build() {
         Ok(c) => c,
         Err(e) => return ApiError::response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -161,6 +169,7 @@ pub async fn api_ai_chat(Json(req): Json<AiChatRequest>) -> Response {
     if !upstream.status().is_success() {
         let status = upstream.status().as_u16();
         let text = upstream.text().await.unwrap_or_default();
+        info!("AI CHAT upstream error HTTP {}: {:.200}", status, text);
         let msg = if text.is_empty() {
             format!("Upstream {} returned HTTP {}", url, status)
         } else {
@@ -171,6 +180,7 @@ pub async fn api_ai_chat(Json(req): Json<AiChatRequest>) -> Response {
             msg,
         );
     }
+    info!("AI CHAT streaming from {}", url);
 
     let stream = upstream
         .bytes_stream()

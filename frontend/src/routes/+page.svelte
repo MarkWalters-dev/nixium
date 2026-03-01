@@ -766,7 +766,7 @@
 	 * - OpenAI: native function-calling for MCP tools in ALL modes; file tools added in agent mode.
 	 * - Ollama/custom: XML mcp_call protocol in ALL modes; full XML agent protocol in agent mode.
 	 */
-	async function _doAiTurn(tidx: number, systemPrompt: string, depth: number): Promise<void> {
+	async function _doAiTurn(tidx: number, systemPrompt: string, depth: number, forceXml = false): Promise<void> {
 		if (depth >= MAX_AGENT_TURNS) return;
 
 		const isAgentMode = chatInteractionMode === 'agent';
@@ -776,7 +776,8 @@
 		// Every other provider (openai, ollama, custom) speaks OpenAI-compatible
 		// /v1/chat/completions with the `tools` field — modern Ollama supports this natively.
 		// Use native function-calling for all non-Anthropic providers whenever any tools exist.
-		const useNativeTools = settings.ai.provider !== 'anthropic' && (isAgentMode || enabledMcpTools.length > 0);
+		// forceXml=true is set automatically when the model reports it does not support tools.
+		const useNativeTools = !forceXml && settings.ai.provider !== 'anthropic' && (isAgentMode || enabledMcpTools.length > 0);
 		// Non-OpenAI agent mode: full XML protocol (files + mcp_call).
 		const useXmlAgent = isAgentMode && !useNativeTools;
 		// Non-OpenAI non-agent with MCP tools: parse mcp_call XML in the response.
@@ -808,8 +809,27 @@
 		if (!res.ok) {
 			const raw = await res.text().catch(() => '');
 			let msg: string;
-			try { msg = (JSON.parse(raw) as { error?: string }).error ?? raw; } catch { msg = raw; }
+			try {
+				const outer = JSON.parse(raw) as { error?: unknown };
+				const errField = outer.error;
+				if (typeof errField === 'string') {
+					// ApiError wraps the upstream body as a string — try to extract the message
+					try {
+						const inner = JSON.parse(errField) as { error?: { message?: string } | string };
+						const ie = inner.error;
+						msg = (ie && typeof ie === 'object') ? (ie.message ?? errField) : (typeof ie === 'string' ? ie : errField);
+					} catch { msg = errField; }
+				} else if (errField && typeof errField === 'object') {
+					msg = (errField as { message?: string }).message ?? JSON.stringify(errField);
+				} else { msg = raw; }
+			} catch { msg = raw; }
 			if (!msg) msg = `HTTP ${res.status} ${res.statusText}`;
+			// If the model doesn't support tools, transparently retry in XML mode
+			if (useNativeTools && /does not support tools/i.test(msg)) {
+				chatThreads[tidx].messages = chatThreads[tidx].messages.slice(0, -1);
+				await _doAiTurn(tidx, systemPrompt, depth, true);
+				return;
+			}
 			chatThreads[tidx].messages[idx] = { role: 'assistant', content: msg, error: true };
 			return;
 		}
@@ -937,7 +957,7 @@
 						content: result, error: isErr,
 					}];
 				}
-				if (needsFollowUp) await _doAiTurn(tidx, systemPrompt, depth + 1);
+				if (needsFollowUp) await _doAiTurn(tidx, systemPrompt, depth + 1, forceXml);
 			}
 		}
 	}
