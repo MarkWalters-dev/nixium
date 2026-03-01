@@ -1379,7 +1379,7 @@ async fn main() {
         .layer(cors)
         .with_state(state);
 
-    let bind_addr = env::var("NIXIUM_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".into());
+    let bind_addr = env::var("NIXIUM_ADDR").unwrap_or_else(|_| "0.0.0.0:8123".into());
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .expect("Failed to bind TCP listener");
