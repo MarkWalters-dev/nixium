@@ -14,6 +14,7 @@
 
 mod ai;
 mod assets;
+mod chats;
 mod error;
 mod extensions;
 mod fs;
@@ -71,6 +72,9 @@ async fn main() {
         .route("/ai/agent",         post(ai::api_ai_agent))
         .route("/ai/chat",          post(ai::api_ai_chat))
         .route("/ai/ollama-models", get(ai::api_ollama_models))
+        // ── Chat persistence ─────────────────────────────────────────────
+        .route("/chats", get(chats::api_chats_load))
+        .route("/chats", post(chats::api_chats_save))
         // ── MCP skills ───────────────────────────────────────────────────
         .route("/mcp/tools",              get(mcp::api_mcp_list_tools))
         .route("/mcp/tools/:name/toggle", post(mcp::api_mcp_toggle_tool))

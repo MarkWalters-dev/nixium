@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { tick, onMount } from 'svelte';
 	import { createCodeMirrorAction, type EditorExtensionKey } from '$lib/useCodeMirror';
 	import FileBrowser from '$lib/FileBrowser.svelte';
 	import FolderPicker from '$lib/FolderPicker.svelte';
@@ -37,8 +37,9 @@
 	let runMsg          = $state<{ msg: string; kind: StatusKind } | null>(null);
 	function _genChatId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 	const _initChatId = _genChatId();
-	let chatThreads     = $state<ChatThread[]>([{ id: _initChatId, title: 'New Chat', messages: [], createdAt: Date.now() }]);
+	let chatThreads     = $state<ChatThread[]>([]);
 	let activeChatId    = $state(_initChatId);
+	let _chatsLoaded    = $state(false);
 	let chatLoading     = $state(false);
 	let chatUseContext  = $state(false);
 	let chatVisible     = $state(false);
@@ -170,6 +171,41 @@
 	$effect(() => { localStorage.setItem(AUTOSAVE_KEY, autosave ? '1' : '0'); });
 	$effect(() => { localStorage.setItem('nixium-statusbar', statusBarVisible ? '1' : '0'); });
 	$effect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); });
+	// Load chat threads from server on mount; save (debounced) on every change
+	onMount(async () => {
+		try {
+			const res = await fetch('/api/chats');
+			if (res.ok) {
+				const saved: ChatThread[] = await res.json();
+				if (saved.length > 0) {
+					chatThreads = saved;
+					activeChatId = saved[0].id;
+				} else {
+					chatThreads = [{ id: _initChatId, title: 'New Chat', messages: [], createdAt: Date.now() }];
+				}
+			} else {
+				chatThreads = [{ id: _initChatId, title: 'New Chat', messages: [], createdAt: Date.now() }];
+			}
+		} catch {
+			chatThreads = [{ id: _initChatId, title: 'New Chat', messages: [], createdAt: Date.now() }];
+		} finally {
+			_chatsLoaded = true;
+		}
+	});
+	let _chatSaveTimer: ReturnType<typeof setTimeout> | null = null;
+	$effect(() => {
+		void chatThreads;
+		if (!_chatsLoaded) return;
+		if (_chatSaveTimer) clearTimeout(_chatSaveTimer);
+		_chatSaveTimer = setTimeout(() => {
+			fetch('/api/chats', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(chatThreads),
+			}).catch(() => {});
+		}, 800);
+		return () => { if (_chatSaveTimer) clearTimeout(_chatSaveTimer); };
+	});
 	// Apply editor option toggles to the live editor whenever settings change
 	$effect(() => {
 		const ext = settings.nixiumOptions;
