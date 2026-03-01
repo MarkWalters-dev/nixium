@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<!-- Responsive viewport – critical for nix-on-droid / mobile UI -->
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<!-- PWA theme color matches the nixium toolbar -->
+		<meta name="theme-color" content="#1e1e2e" />
+		<!-- iOS PWA support -->
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<meta name="apple-mobile-web-app-title" content="Nixium" />
+		<!-- Link the PWA manifest -->
+		<link rel="manifest" href="/manifest.json" />
+		<link rel="icon" href="/favicon.png" />
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

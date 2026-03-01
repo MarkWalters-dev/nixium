@@ -1,0 +1,56 @@
+[package]
+name = "nixium"
+version = "0.1.0"
+edition = "2021"
+description = "Single-binary self-hosted code editor for NixOS and nix-on-droid"
+
+[[bin]]
+name = "nixium"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = { version = "0.7", features = ["macros", "json", "ws"] }
+
+# PTY for the integrated terminal
+portable-pty = "0.8"
+
+# Async combinators used by the terminal WS handler
+futures-util = "0.3"
+
+# Embed static files into the binary at compile time
+rust-embed = { version = "8", features = [] }
+
+# Serialization / Deserialization for API payloads
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# MIME type detection for serving embedded assets
+mime_guess = "2"
+
+# HTTP utilities (CORS, tracing)
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower = { version = "0.4" }
+
+# Structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP client – used by the AI chat proxy endpoint
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# Archive extraction – used by the extension store installer
+flate2 = "1"
+tar   = "0.4"
+zip   = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+# Maximise binary size reduction for the single-binary target
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,1 @@
+./build.sh --release && NIXIUM_ADDR=0.0.0.0:8123 target/release/nixium

@@ -1,0 +1,1 @@
+cd frontend;yes|npx npm-check-updates -u;cd ..;git add .;git commit -m .;git push;ssh p72-z "cd code/nixium;rm frontend/pnpm-lock.yaml;git clean -fd;git pull"
