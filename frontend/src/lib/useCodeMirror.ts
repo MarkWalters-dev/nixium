@@ -179,11 +179,14 @@ function createMinimapPlugin() {
 	return ViewPlugin.fromClass(
 		class {
 			container: HTMLDivElement;
-			canvas: HTMLCanvasElement;
+			canvas: HTMLCanvasElement;      // text layer (redrawn on doc change)
+			overlay: HTMLCanvasElement;     // viewport box layer (redrawn on scroll)
 			raf: number | null = null;
+			rafScroll: number | null = null;
 			dragging = false;
 			onMouseMove: ((e: MouseEvent) => void) | null = null;
 			onMouseUp: ((e: MouseEvent) => void) | null = null;
+			onScroll: (() => void) | null = null;
 
 			constructor(private view: EditorView) {
 				this.container = document.createElement('div');
@@ -199,9 +202,14 @@ function createMinimapPlugin() {
 				});
 				this.container.title = 'Minimap – drag or click to scroll';
 
+				// Text layer sits below, viewport overlay sits on top
+				const sharedStyle = 'position:absolute;top:0;left:0;width:100%;height:100%;display:block;';
 				this.canvas = document.createElement('canvas');
-				this.canvas.style.cssText = 'display:block;width:100%;height:100%;';
+				this.canvas.style.cssText = sharedStyle;
+				this.overlay = document.createElement('canvas');
+				this.overlay.style.cssText = sharedStyle + 'pointer-events:none;';
 				this.container.appendChild(this.canvas);
+				this.container.appendChild(this.overlay);
 
 				// ── Shared scroll helper ─────────────────────────────────────
 				const scrollTo = (clientY: number) => {
@@ -240,6 +248,9 @@ function createMinimapPlugin() {
 				view.dom.appendChild(this.container);
 				// Indent scroller content so it isn't hidden behind the minimap
 				view.scrollDOM.style.paddingRight = MINIMAP_W + 'px';
+				// Redraw viewport box on every scroll tick (RAF-debounced)
+				this.onScroll = () => this.scheduleOverlay(view);
+				view.scrollDOM.addEventListener('scroll', this.onScroll, { passive: true });
 				this.schedule(view);
 			}
 
@@ -249,15 +260,27 @@ function createMinimapPlugin() {
 				}
 			}
 
+			// Schedule a full redraw (text + overlay) – for doc/geometry changes
 			schedule(view: EditorView) {
 				if (this.raf !== null) return;
 				this.raf = requestAnimationFrame(() => {
 					this.raf = null;
-					this.draw(view);
+					this.drawText(view);
+					this.drawOverlay(view);
 				});
 			}
 
-			draw(view: EditorView) {
+			// Schedule only the overlay redraw – for scroll events
+			scheduleOverlay(view: EditorView) {
+				if (this.rafScroll !== null) return;
+				this.rafScroll = requestAnimationFrame(() => {
+					this.rafScroll = null;
+					this.drawOverlay(view);
+				});
+			}
+
+			// Draw text lines onto the background canvas
+			drawText(view: EditorView) {
 				const W = this.container.clientWidth || MINIMAP_W;
 				const H = this.container.clientHeight || 400;
 				this.canvas.width = W;
@@ -283,8 +306,19 @@ function createMinimapPlugin() {
 						ctx.fillRect(2 + indent, y + 0.5, w, Math.max(0.5, lineH - 0.75));
 					}
 				}
+			}
 
-				// Viewport box
+			// Draw the viewport box onto the transparent overlay canvas
+			drawOverlay(view: EditorView) {
+				const W = this.container.clientWidth || MINIMAP_W;
+				const H = this.container.clientHeight || 400;
+				this.overlay.width = W;
+				this.overlay.height = H;
+				const ctx = this.overlay.getContext('2d');
+				if (!ctx) return;
+
+				ctx.clearRect(0, 0, W, H);
+
 				const sd = view.scrollDOM;
 				const scrollH = sd.scrollHeight;
 				const clientH = sd.clientHeight;
@@ -302,8 +336,10 @@ function createMinimapPlugin() {
 
 			destroy() {
 				if (this.raf !== null) cancelAnimationFrame(this.raf);
+				if (this.rafScroll !== null) cancelAnimationFrame(this.rafScroll);
 				if (this.onMouseMove) document.removeEventListener('mousemove', this.onMouseMove);
 				if (this.onMouseUp)   document.removeEventListener('mouseup',   this.onMouseUp);
+				if (this.onScroll)    this.view.scrollDOM.removeEventListener('scroll', this.onScroll);
 				this.view.scrollDOM.style.paddingRight = '';
 				this.container.remove();
 			}
