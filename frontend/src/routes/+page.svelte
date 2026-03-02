@@ -34,6 +34,7 @@
 	let tabStatus       = $state<Record<string, { msg: string; kind: StatusKind }>>({});
 	let autosave        = $state(typeof localStorage !== 'undefined' ? localStorage.getItem(AUTOSAVE_KEY) === '1' : false);
 	let statusBarVisible = $state(typeof localStorage !== 'undefined' ? localStorage.getItem('nixium-statusbar') !== '0' : true);
+	let isFullscreen    = $state(false);
 	let runMsg          = $state<{ msg: string; kind: StatusKind } | null>(null);
 	function _genChatId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 	const _initChatId = _genChatId();
@@ -227,6 +228,7 @@
 		{ id: 'toggleterm',     label: 'View: Toggle Terminal',                keybinding: 'Ctrl+`',       action: toggleTerminal },
 		{ id: 'termlayout',     label: `View: Terminal → ${terminalMode === 'tab' ? 'Panel' : 'Tab'}`, action: () => { if (!terminalVisible) setTerminalVisible(true); setTerminalMode(terminalMode === 'tab' ? 'panel' : 'tab'); } },
 		{ id: 'togglestatusbar',label: `View: ${statusBarVisible ? 'Hide' : 'Show'} Status Bar`,  keybinding: 'Ctrl+J',       action: () => { statusBarVisible = !statusBarVisible; } },
+		{ id: 'fullscreen',     label: `View: ${isFullscreen ? 'Exit Full Screen' : 'Enter Full Screen'}`, keybinding: 'F11', action: toggleFullscreen },
 		{ id: 'toggleautosave', label: `File: ${autosave ? 'Disable' : 'Enable'} Autosave`,        action: () => { autosave = !autosave; } },
 		{ id: 'togglechat',     label: 'AI: Toggle Chat',                      keybinding: 'Ctrl+K',       action: toggleChat },
 		{ id: 'newchat',        label: 'AI: New Chat Thread',                  action: newChat },
@@ -247,12 +249,23 @@
 		...extCommands,
 	] as PaletteCommand[]);
 
+	function toggleFullscreen() {
+		if (!document.fullscreenElement) {
+			document.documentElement.requestFullscreen().catch(() => {});
+		} else {
+			document.exitFullscreen().catch(() => {});
+		}
+	}
+
 	// Persist preferences
 	$effect(() => { localStorage.setItem(AUTOSAVE_KEY, autosave ? '1' : '0'); });
 	$effect(() => { localStorage.setItem('nixium-statusbar', statusBarVisible ? '1' : '0'); });
 	$effect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); });
 	// Load chat threads from server on mount
 	onMount(async () => {
+		const onFsChange = () => { isFullscreen = !!document.fullscreenElement; };
+		document.addEventListener('fullscreenchange', onFsChange);
+
 		try {
 			const res = await fetch('/api/chats');
 			if (res.ok) {
@@ -269,6 +282,8 @@
 		} catch {
 			chatThreads = [{ id: _initChatId, title: 'New Chat', messages: [], createdAt: Date.now() }];
 		}
+
+		return () => document.removeEventListener('fullscreenchange', onFsChange);
 	});
 	function saveChatThreads() {
 		fetch('/api/chats', {
@@ -1058,6 +1073,7 @@
 		if (mod && e.key === '`') { e.preventDefault(); toggleTerminal(); }
 		if (mod && e.key === 'Enter') { e.preventDefault(); runProject(); }
 		if (mod && e.key === 'j') { e.preventDefault(); statusBarVisible = !statusBarVisible; }
+		if (e.key === 'F11') { e.preventDefault(); toggleFullscreen(); }
 		if (mod && e.key === 'k') { e.preventDefault(); toggleChat(); }
 		// Ctrl+Shift+F – Find in Files
 		if (mod && e.shiftKey && e.key === 'F') { e.preventDefault(); openFindInFiles(); }
@@ -1230,6 +1246,11 @@
 						</button>
 					</li>
 					<li role="menuitem">
+						<button onclick={() => { menuOpen = false; toggleFullscreen(); }}>
+							{isFullscreen ? '⛶ Exit Full Screen' : '⛶ Full Screen'} <kbd>F11</kbd>
+						</button>
+					</li>
+					<li role="menuitem">
 						<button onclick={() => { menuOpen = false; openFindInFiles(); }}>
 							🔍 Find in Files <kbd>Ctrl+Shift+F</kbd>
 						</button>
@@ -1317,7 +1338,8 @@
 				title="Run project (Ctrl+Enter) — configure via .nixium in workspace root"
 			>▶ Run</button>
 			<button class="icon-btn save-btn" onclick={saveActiveTab} disabled={!activeTab || activeTabPath === TERM_TAB || activeTabPath === CHAT_TAB} title="Save (Ctrl+S)">💾</button>
-			<button class="icon-btn" onclick={openSettings} title="Settings">⚙</button>
+			<button class="icon-btn" onclick={toggleFullscreen} title="{isFullscreen ? 'Exit Full Screen' : 'Full Screen'} (F11)">{isFullscreen ? '⛶' : '⛶'}</button>
+		<button class="icon-btn" onclick={openSettings} title="Settings">⚙</button>
 		</div>
 	</header>
 
