@@ -3,7 +3,8 @@
 	<head>
 		<meta charset="utf-8" />
 		<!-- Responsive viewport – critical for nix-on-droid / mobile UI -->
-		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<!-- user-scalable=yes + minimum-scale lets users pinch-zoom freely on mobile/PWA -->
+		<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes, viewport-fit=cover" />
 		<!-- PWA theme color matches the nixium toolbar -->
 		<meta name="theme-color" content="#1e1e2e" />
 		<!-- iOS PWA support -->

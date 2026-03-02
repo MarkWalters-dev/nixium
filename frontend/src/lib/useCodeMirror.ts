@@ -25,6 +25,8 @@ import {
 	rectangularSelection,
 	crosshairCursor,
 	highlightActiveLine,
+	ViewPlugin,
+	type ViewUpdate,
 } from '@codemirror/view';
 import {
 	defaultKeymap,
@@ -165,7 +167,114 @@ export type EditorExtensionKey =
 	| 'foldGutter'
 	| 'autoBrackets'
 	| 'highlightActiveLine'
-	| 'autocompletion';
+	| 'autocompletion'
+	| 'minimap';
+
+// ---------------------------------------------------------------------------
+// Minimap ViewPlugin
+// ---------------------------------------------------------------------------
+const MINIMAP_W = 72;
+
+function createMinimapPlugin() {
+	return ViewPlugin.fromClass(
+		class {
+			container: HTMLDivElement;
+			canvas: HTMLCanvasElement;
+			raf: number | null = null;
+
+			constructor(private view: EditorView) {
+				this.container = document.createElement('div');
+				Object.assign(this.container.style, {
+					position: 'absolute', right: '0', top: '0', bottom: '0',
+					width: MINIMAP_W + 'px', zIndex: '8', overflow: 'hidden',
+					background: '#13131c',
+					borderLeft: '1px solid rgba(255,255,255,0.07)',
+					cursor: 'pointer',
+				});
+				this.container.title = 'Minimap – click to jump';
+
+				this.canvas = document.createElement('canvas');
+				this.canvas.style.cssText = 'display:block;width:100%;height:100%;';
+				this.container.appendChild(this.canvas);
+
+				this.container.addEventListener('click', (e) => {
+					const rect = this.container.getBoundingClientRect();
+					const frac = (e.clientY - rect.top) / rect.height;
+					const sd = this.view.scrollDOM;
+					sd.scrollTop = frac * (sd.scrollHeight - sd.clientHeight);
+				});
+
+				view.dom.appendChild(this.container);
+				// Indent scroller content so it isn't hidden behind the minimap
+				view.scrollDOM.style.paddingRight = MINIMAP_W + 'px';
+				this.schedule(view);
+			}
+
+			update(update: ViewUpdate) {
+				if (update.docChanged || update.viewportChanged || update.geometryChanged) {
+					this.schedule(update.view);
+				}
+			}
+
+			schedule(view: EditorView) {
+				if (this.raf !== null) return;
+				this.raf = requestAnimationFrame(() => {
+					this.raf = null;
+					this.draw(view);
+				});
+			}
+
+			draw(view: EditorView) {
+				const W = this.container.clientWidth || MINIMAP_W;
+				const H = this.container.clientHeight || 400;
+				this.canvas.width = W;
+				this.canvas.height = H;
+				const ctx = this.canvas.getContext('2d');
+				if (!ctx) return;
+
+				ctx.fillStyle = '#13131c';
+				ctx.fillRect(0, 0, W, H);
+
+				const doc = view.state.doc;
+				const totalLines = doc.lines;
+				const lineH = H / totalLines;
+
+				for (let i = 1; i <= totalLines; i++) {
+					const line = doc.line(i);
+					const trimmed = line.text.trimStart();
+					const indent = (line.length - trimmed.length) * 0.4;
+					const w = Math.min(W - 4, trimmed.length * 0.5);
+					const y = ((i - 1) / totalLines) * H;
+					if (w > 0) {
+						ctx.fillStyle = 'rgba(145, 185, 255, 0.22)';
+						ctx.fillRect(2 + indent, y + 0.5, w, Math.max(0.5, lineH - 0.75));
+					}
+				}
+
+				// Viewport box
+				const sd = view.scrollDOM;
+				const scrollH = sd.scrollHeight;
+				const clientH = sd.clientHeight;
+				const ratio = scrollH > 0 ? H / scrollH : 1;
+				const vpH = Math.max(16, clientH * ratio);
+				const vpY = sd.scrollTop * ratio;
+				ctx.fillStyle = 'rgba(255,255,255,0.06)';
+				ctx.fillRect(0, vpY, W, vpH);
+				ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.rect(0.5, vpY + 0.5, W - 1, vpH - 1);
+				ctx.stroke();
+			}
+
+			destroy() {
+				if (this.raf !== null) cancelAnimationFrame(this.raf);
+				this.view.scrollDOM.style.paddingRight = '';
+				this.container.remove();
+			}
+		}
+	);
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -193,6 +302,7 @@ export function createCodeMirrorAction(
 	const autoBracketsCompartment     = new Compartment();
 	const activeLineCompartment       = new Compartment();
 	const autocompletionCompartment   = new Compartment();
+	const minimapCompartment          = new Compartment();
 
 	// ---------------------------------------------------------------------------
 	// Base extensions that are always present
@@ -239,6 +349,9 @@ export function createCodeMirrorAction(
 			activeLineCompartment.of(highlightActiveLine()),
 			autocompletionCompartment.of(autocompletion({ defaultKeymap: true })),
 			wordWrapCompartment.of([]),
+
+			// Minimap (defaults off)
+			minimapCompartment.of([]),
 
 			// Change listener
 			EditorView.updateListener.of((update) => {
@@ -346,6 +459,9 @@ export function createCodeMirrorAction(
 				break;
 			case 'autocompletion':
 				effect = autocompletionCompartment.reconfigure(enabled ? autocompletion({ defaultKeymap: true }) : []);
+				break;
+			case 'minimap':
+				effect = minimapCompartment.reconfigure(enabled ? createMinimapPlugin() : []);
 				break;
 			default:
 				return;

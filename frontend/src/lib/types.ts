@@ -62,6 +62,7 @@ export const DEFAULT_NIXIUM_OPTIONS: AppSettings['nixiumOptions'] = {
 	autoBrackets: true,
 	highlightActiveLine: true,
 	autocompletion: true,
+	minimap: false,
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -99,4 +100,5 @@ export const EDITOR_OPTION_ITEMS: Array<{ key: EditorExtensionKey; label: string
 	{ key: 'autoBrackets',        label: 'Auto Close Brackets',   desc: 'Automatically insert closing brackets and quotes' },
 	{ key: 'highlightActiveLine', label: 'Highlight Active Line', desc: 'Highlight the line the cursor is on' },
 	{ key: 'autocompletion',      label: 'Autocompletion',        desc: 'Suggest completions while typing (Ctrl+Space)' },
+	{ key: 'minimap',             label: 'Minimap',               desc: 'Show a scaled overview of the file on the right edge of the editor' },
 ];
