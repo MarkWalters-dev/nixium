@@ -931,7 +931,7 @@ pub async fn api_ai_agent_stream(
     let from = q.from.unwrap_or(0);
     let session_opt = state.sessions.lock().await.get(&session_id).cloned();
     let Some(session) = session_opt else {
-        return ApiError::response(StatusCode::NOT_FOUND, "Session not found or expired".into());
+        return ApiError::response(StatusCode::NOT_FOUND, "Session not found or expired".to_string());
     };
     let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
     tokio::spawn(pipe_session_to_tx(session, from, tx));
