@@ -834,25 +834,45 @@
 			}
 
 			chatSessionId = res.headers.get('x-session-id');
-			await readStream(res);
 
-			// If we didn't receive 'done', try to reconnect and resume.
-			if (!gotDone && chatSessionId) {
-				let retryDelay = 1500;
-				for (let attempt = 0; attempt < 6 && !gotDone; attempt++) {
-					await new Promise(r => setTimeout(r, retryDelay));
-					retryDelay = Math.min(retryDelay * 2, 10_000);
+			// Unified reconnect loop.
+			// First iteration consumes the initial response already in hand.
+			// If the stream throws a network error (not user-abort), we wait and
+			// hit the resume endpoint.  If the resume fetch itself fails (WiFi
+			// still down), currentStream stays null and we retry again next lap.
+			let currentStream: Response | null = res;
+			let retryDelay = 1500;
+			let retries = 0;
+			const MAX_RETRIES = 10;
+
+			while (!gotDone) {
+				if (currentStream) {
 					try {
-						const res2 = await fetch(
-							`/api/ai/agent/stream/${chatSessionId}?from=${receivedCount}`,
-							{ signal: controller.signal }
-						);
-						if (!res2.ok) break; // session expired / server restarted
-						await readStream(res2);
-					} catch (err2) {
-						if ((err2 as DOMException).name === 'AbortError') throw err2; // propagate stop
-						// else continue retrying
+						await readStream(currentStream);
+						break; // stream ended cleanly
+					} catch (streamErr) {
+						if ((streamErr as DOMException).name === 'AbortError') throw streamErr;
+						// Network dropped mid-stream — fall through to reconnect
 					}
+				}
+
+				if (!chatSessionId || retries >= MAX_RETRIES) break;
+				retries++;
+				await new Promise(r => setTimeout(r, retryDelay));
+				retryDelay = Math.min(retryDelay * 2, 15_000);
+
+				if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+				try {
+					const next = await fetch(
+						`/api/ai/agent/stream/${chatSessionId}?from=${receivedCount}`,
+						{ signal: controller.signal }
+					);
+					if (!next.ok) break; // session expired / server restarted
+					currentStream = next;
+				} catch (fetchErr) {
+					if ((fetchErr as DOMException).name === 'AbortError') throw fetchErr;
+					currentStream = null; // WiFi still down — retry the wait
 				}
 			}
 
