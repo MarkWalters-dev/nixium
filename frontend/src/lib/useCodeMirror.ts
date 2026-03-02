@@ -181,6 +181,9 @@ function createMinimapPlugin() {
 			container: HTMLDivElement;
 			canvas: HTMLCanvasElement;
 			raf: number | null = null;
+			dragging = false;
+			onMouseMove: ((e: MouseEvent) => void) | null = null;
+			onMouseUp: ((e: MouseEvent) => void) | null = null;
 
 			constructor(private view: EditorView) {
 				this.container = document.createElement('div');
@@ -189,20 +192,50 @@ function createMinimapPlugin() {
 					width: MINIMAP_W + 'px', zIndex: '8', overflow: 'hidden',
 					background: '#13131c',
 					borderLeft: '1px solid rgba(255,255,255,0.07)',
-					cursor: 'pointer',
+					cursor: 'ns-resize',
+					// Prevent the browser from hijacking touch gestures on mobile
+					touchAction: 'none',
+					userSelect: 'none',
 				});
-				this.container.title = 'Minimap – click to jump';
+				this.container.title = 'Minimap – drag or click to scroll';
 
 				this.canvas = document.createElement('canvas');
 				this.canvas.style.cssText = 'display:block;width:100%;height:100%;';
 				this.container.appendChild(this.canvas);
 
-				this.container.addEventListener('click', (e) => {
+				// ── Shared scroll helper ─────────────────────────────────────
+				const scrollTo = (clientY: number) => {
 					const rect = this.container.getBoundingClientRect();
-					const frac = (e.clientY - rect.top) / rect.height;
+					const frac = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
 					const sd = this.view.scrollDOM;
 					sd.scrollTop = frac * (sd.scrollHeight - sd.clientHeight);
+				};
+
+				// ── Mouse drag ──────────────────────────────────────────────
+				this.container.addEventListener('mousedown', (e) => {
+					e.preventDefault();
+					this.dragging = true;
+					scrollTo(e.clientY);
+
+					this.onMouseMove = (ev: MouseEvent) => { if (this.dragging) scrollTo(ev.clientY); };
+					this.onMouseUp   = () => { this.dragging = false; };
+					document.addEventListener('mousemove', this.onMouseMove);
+					document.addEventListener('mouseup',   this.onMouseUp, { once: true });
 				});
+
+				// ── Touch drag ──────────────────────────────────────────────
+				this.container.addEventListener('touchstart', (e) => {
+					e.preventDefault();
+					this.dragging = true;
+					scrollTo(e.touches[0].clientY);
+				}, { passive: false });
+
+				this.container.addEventListener('touchmove', (e) => {
+					e.preventDefault();
+					if (this.dragging) scrollTo(e.touches[0].clientY);
+				}, { passive: false });
+
+				this.container.addEventListener('touchend', () => { this.dragging = false; });
 
 				view.dom.appendChild(this.container);
 				// Indent scroller content so it isn't hidden behind the minimap
@@ -269,6 +302,8 @@ function createMinimapPlugin() {
 
 			destroy() {
 				if (this.raf !== null) cancelAnimationFrame(this.raf);
+				if (this.onMouseMove) document.removeEventListener('mousemove', this.onMouseMove);
+				if (this.onMouseUp)   document.removeEventListener('mouseup',   this.onMouseUp);
 				this.view.scrollDOM.style.paddingRight = '';
 				this.container.remove();
 			}
