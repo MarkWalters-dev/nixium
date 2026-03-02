@@ -69,9 +69,11 @@ async fn main() {
         // ── Terminal ─────────────────────────────────────────────────────
         .route("/terminal/ws", get(terminal::terminal_ws))
         // ── AI proxy ─────────────────────────────────────────────────────
-        .route("/ai/agent",         post(ai::api_ai_agent))
-        .route("/ai/chat",          post(ai::api_ai_chat))
-        .route("/ai/ollama-models", get(ai::api_ollama_models))
+        .route("/ai/agent",                 post(ai::api_ai_agent))
+        .route("/ai/agent/stream/:id",      get(ai::api_ai_agent_stream))
+        .route("/ai/agent/:id",             axum::routing::delete(ai::api_ai_agent_cancel))
+        .route("/ai/chat",                  post(ai::api_ai_chat))
+        .route("/ai/ollama-models",         get(ai::api_ollama_models))
         // ── Chat persistence ─────────────────────────────────────────────
         .route("/chats",     get(chats::api_chats_load))
         .route("/chats",     post(chats::api_chats_save))

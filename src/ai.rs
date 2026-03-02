@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -11,7 +11,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::{error::ApiError, mcp, state::AppState};
+use crate::{error::ApiError, mcp, state::{AgentSession, AppState}};
 
 const MAX_AGENT_TURNS: usize = 8;
 
@@ -118,9 +118,45 @@ struct FileWritten {
     content: String,
 }
 
-#[inline]
-fn sse(event: &AgentEvent) -> Vec<u8> {
-    format!("data: {}\n\n", serde_json::to_string(event).unwrap_or_default()).into_bytes()
+/// Serialise an event to a single SSE string with an `id:` field so clients
+/// can resume from a specific offset after reconnecting.
+fn sse_line(idx: usize, event: &AgentEvent) -> String {
+    format!("id: {}\ndata: {}\n\n", idx, serde_json::to_string(event).unwrap_or_default())
+}
+
+// ---------------------------------------------------------------------------
+// EventSink – writes to the session buffer AND the live client channel
+// ---------------------------------------------------------------------------
+
+/// Wraps a session buffer + a live SSE sender so every event is:
+///  1. Buffered in `session.events` (survives client disconnect)
+///  2. Forwarded to the currently-connected client over the mpsc channel
+///
+/// Returns `false` from `send()` when the session has been cancelled (stop
+/// button), which signals the agent loop to abort early.
+struct EventSink {
+    session: Arc<AgentSession>,
+    live_tx: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+impl EventSink {
+    fn new(session: Arc<AgentSession>, live_tx: mpsc::UnboundedSender<Vec<u8>>) -> Self {
+        Self { session, live_tx }
+    }
+
+    /// Send an event.  Returns `false` if the session was cancelled.
+    fn send(&self, event: &AgentEvent) -> bool {
+        let idx = self.session.events.lock().unwrap().len();
+        let line = sse_line(idx, event);
+        let buffered = self.session.push(line.clone()); // returns false if cancelled
+        let _ = self.live_tx.send(line.into_bytes());
+        buffered
+    }
+
+    /// Finalise the session (mark done, wake cleanup task).
+    fn finish(&self) {
+        self.session.finish();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +526,7 @@ async fn do_openai_turn(
     system_prompt: &str,
     messages: Vec<serde_json::Value>,
     tools: Option<serde_json::Value>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    sink: &EventSink,
 ) -> TurnOutput {
     let base = if !base_url.is_empty() { base_url.trim_end_matches('/').to_string() }
                else if provider == "ollama" { "http://localhost:11434".to_string() }
@@ -551,7 +587,9 @@ async fn do_openai_turn(
             if let Some(chunk_text) = delta["content"].as_str() {
                 if !chunk_text.is_empty() {
                     full_text.push_str(chunk_text);
-                    let _ = tx.send(sse(&AgentEvent::Text { content: chunk_text.to_string() }));
+                    if !sink.send(&AgentEvent::Text { content: chunk_text.to_string() }) {
+                        return TurnOutput { text: full_text, tool_calls: vec![], function_confusion: false, tools_not_supported: false, error: None };
+                    }
                 }
             }
             if let Some(tcs) = delta["tool_calls"].as_array() {
@@ -606,7 +644,7 @@ async fn do_anthropic_turn(
     base_url: &str,
     system_prompt: &str,
     messages: Vec<serde_json::Value>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    sink: &EventSink,
 ) -> TurnOutput {
     let base = if base_url.is_empty() { "https://api.anthropic.com" } else { base_url };
     let body = serde_json::json!({ "model": model, "max_tokens": 8096, "stream": true, "system": system_prompt, "messages": messages });
@@ -640,7 +678,9 @@ async fn do_anthropic_turn(
                 if let Some(text) = p["delta"]["text"].as_str() {
                     if !text.is_empty() {
                         full_text.push_str(text);
-                        let _ = tx.send(sse(&AgentEvent::Text { content: text.to_string() }));
+                        if !sink.send(&AgentEvent::Text { content: text.to_string() }) {
+                            return TurnOutput { text: full_text, tool_calls: vec![], function_confusion: false, tools_not_supported: false, error: None };
+                        }
                     }
                 }
             }
@@ -658,8 +698,10 @@ async fn run_agent_loop(
     req: AgentRequest,
     state: Arc<AppState>,
     client: reqwest::Client,
-    tx: mpsc::UnboundedSender<Vec<u8>>,
+    session: Arc<AgentSession>,
+    live_tx: mpsc::UnboundedSender<Vec<u8>>,
 ) {
+    let sink = EventSink::new(session, live_tx);
     let is_anthropic = req.provider == "anthropic";
     let is_agent = req.mode == "agent";
 
@@ -703,21 +745,21 @@ async fn run_agent_loop(
         let use_native = !force_xml && !is_anthropic && (is_agent || mcp_tools.iter().any(|t| t.enabled));
         let xml_msgs = !use_native;
 
-        // Exit immediately if the client has disconnected (stop button / navigation).
-        if tx.send(sse(&AgentEvent::TurnStart)).is_err() { return; }
+        // Stop if the user pressed the stop button (session cancelled).
+        if !sink.send(&AgentEvent::TurnStart) { return; }
 
         let api_msgs = build_api_messages(&history, xml_msgs);
 
         let turn = if is_anthropic {
-            do_anthropic_turn(&client, &req.api_key, &req.model, &req.base_url, &system_prompt, api_msgs, &tx).await
+            do_anthropic_turn(&client, &req.api_key, &req.model, &req.base_url, &system_prompt, api_msgs, &sink).await
         } else {
             let tools = use_native.then(|| build_tools_array(is_agent, &mcp_tools));
-            do_openai_turn(&client, &req.provider, &req.api_key, &req.model, &req.base_url, &system_prompt, api_msgs, tools, &tx).await
+            do_openai_turn(&client, &req.provider, &req.api_key, &req.model, &req.base_url, &system_prompt, api_msgs, tools, &sink).await
         };
 
         // Recoverable: retry in XML mode
         if turn.tools_not_supported || turn.function_confusion {
-            let _ = tx.send(sse(&AgentEvent::TurnAbort));
+            if !sink.send(&AgentEvent::TurnAbort) { return; }
             force_xml = true;
             if turn.tools_not_supported {
                 // Persist so future requests to this model skip tools immediately.
@@ -728,7 +770,8 @@ async fn run_agent_loop(
         }
 
         if let Some(err) = turn.error {
-            let _ = tx.send(sse(&AgentEvent::Error { message: err }));
+            sink.send(&AgentEvent::Error { message: err });
+            sink.finish();
             return;
         }
 
@@ -749,10 +792,10 @@ async fn run_agent_loop(
                     tc_json["function"]["arguments"].as_str().unwrap_or("{}")
                 ).unwrap_or(serde_json::json!({}));
 
-                // Skip expensive tool execution if the client has already disconnected.
-                if tx.send(sse(&AgentEvent::ToolCall { id: id.clone(), name: name.clone(), args: args.clone() })).is_err() { return; }
+                // Stop if cancelled before executing expensive tool calls.
+                if !sink.send(&AgentEvent::ToolCall { id: id.clone(), name: name.clone(), args: args.clone() }) { return; }
                 let out = exec_tool(&name, &args, &req.root_path, &state, &client).await;
-                if tx.send(sse(&AgentEvent::ToolResult { id: id.clone(), name: name.clone(), content: out.content.clone(), is_error: out.is_error, file_written: out.file_written })).is_err() { return; }
+                if !sink.send(&AgentEvent::ToolResult { id: id.clone(), name: name.clone(), content: out.content.clone(), is_error: out.is_error, file_written: out.file_written }) { return; }
                 history.push(serde_json::json!({ "role": "tool", "tool_call_id": id, "content": out.content }));
             }
             continue; // next AI turn to incorporate tool results
@@ -768,7 +811,7 @@ async fn run_agent_loop(
 
             if !cmds.is_empty() {
                 let clean = strip_xml_commands(&turn.text);
-                let _ = tx.send(sse(&AgentEvent::TextSet { content: clean.clone() }));
+                sink.send(&AgentEvent::TextSet { content: clean.clone() });
                 history.push(serde_json::json!({ "role": "assistant", "content": clean }));
 
                 let mut needs_followup = false;
@@ -782,10 +825,10 @@ async fn run_agent_loop(
                         (cmd.name.clone(), serde_json::json!({ "path": cmd.path, "content": cmd.body }))
                     };
 
-                    if tx.send(sse(&AgentEvent::ToolCall { id: id.clone(), name: name.clone(), args: args.clone() })).is_err() { return; }
+                    if !sink.send(&AgentEvent::ToolCall { id: id.clone(), name: name.clone(), args: args.clone() }) { return; }
                     let out = exec_tool(&name, &args, &req.root_path, &state, &client).await;
                     if !out.is_error { needs_followup = true; }
-                    if tx.send(sse(&AgentEvent::ToolResult { id: id.clone(), name: name.clone(), content: out.content.clone(), is_error: out.is_error, file_written: out.file_written })).is_err() { return; }
+                    if !sink.send(&AgentEvent::ToolResult { id: id.clone(), name: name.clone(), content: out.content.clone(), is_error: out.is_error, file_written: out.file_written }) { return; }
                     history.push(serde_json::json!({ "role": "tool", "tool_call_id": id, "content": out.content }));
                 }
 
@@ -800,7 +843,8 @@ async fn run_agent_loop(
         break;
     }
 
-    let _ = tx.send(sse(&AgentEvent::Done));
+    sink.send(&AgentEvent::Done);
+    sink.finish();
 }
 
 fn small_id() -> String {
@@ -822,8 +866,6 @@ pub async fn api_ai_agent(
         req.provider, req.model, req.mode, req.messages.len()
     );
 
-    let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
-
     // Use only a connect timeout — NOT a full request timeout.  A total timeout
     // kills streaming responses mid-stream and also interferes with localhost DNS
     // fallback (systems that try ::1 before 127.0.0.1 hit the deadline before the
@@ -837,7 +879,29 @@ pub async fn api_ai_agent(
         Err(e) => return ApiError::response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
 
-    tokio::spawn(run_agent_loop(req, state, client, tx));
+    // Create a session that buffers every SSE event so clients can resume
+    // after a network interruption without restarting the AI generation.
+    let session_id = small_id();
+    let session = AgentSession::new();
+    state.sessions.lock().await.insert(session_id.clone(), session.clone());
+
+    let (live_tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(run_agent_loop(req, state.clone(), client, session.clone(), live_tx));
+
+    // Cleanup: remove the session 5 minutes after the agent finishes.
+    {
+        let cleanup_session = session.clone();
+        let cleanup_sessions = state.sessions.clone();
+        let cleanup_id = session_id.clone();
+        tokio::spawn(async move {
+            let mut rx = cleanup_session.notify.subscribe();
+            while !cleanup_session.done.load(std::sync::atomic::Ordering::Relaxed) {
+                if rx.changed().await.is_err() { break; }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            cleanup_sessions.lock().await.remove(&cleanup_id);
+        });
+    }
 
     let s = stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|bytes| (Ok::<Vec<u8>, std::io::Error>(bytes), rx))
@@ -847,8 +911,74 @@ pub async fn api_ai_agent(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"))
         .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+        .header("x-session-id", HeaderValue::from_str(&session_id).unwrap_or(HeaderValue::from_static("0")))
         .body(Body::from_stream(s))
         .unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/ai/agent/stream/:session_id?from=N  – resume a buffered session
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct StreamQuery { pub from: Option<usize> }
+
+pub async fn api_ai_agent_stream(
+    Path(session_id): Path<String>,
+    Query(q): Query<StreamQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let from = q.from.unwrap_or(0);
+    let session_opt = state.sessions.lock().await.get(&session_id).cloned();
+    let Some(session) = session_opt else {
+        return ApiError::response(StatusCode::NOT_FOUND, "Session not found or expired".into());
+    };
+    let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(pipe_session_to_tx(session, from, tx));
+    let s = stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|bytes| (Ok::<Vec<u8>, std::io::Error>(bytes), rx))
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"))
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+        .body(Body::from_stream(s))
+        .unwrap()
+}
+
+/// Pipe buffered session events to a new channel, then stream live events.
+async fn pipe_session_to_tx(session: Arc<AgentSession>, from: usize, tx: mpsc::UnboundedSender<Vec<u8>>) {
+    let mut next = from;
+    loop {
+        // Subscribe BEFORE reading the snapshot to avoid missing events.
+        let mut notify_rx = session.notify.subscribe();
+        let (batch, done) = {
+            let events = session.events.lock().unwrap();
+            let start = next.min(events.len());
+            let batch: Vec<String> = events[start..].to_vec();
+            (batch, session.done.load(std::sync::atomic::Ordering::Acquire))
+        };
+        for line in batch {
+            next += 1;
+            if tx.send(line.into_bytes()).is_err() { return; }
+        }
+        if done { return; }
+        if notify_rx.changed().await.is_err() { return; }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/ai/agent/:session_id  – cancel a running session (stop button)
+// ---------------------------------------------------------------------------
+
+pub async fn api_ai_agent_cancel(
+    Path(session_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    if let Some(session) = state.sessions.lock().await.get(&session_id) {
+        session.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Json(serde_json::json!({"ok": true})).into_response()
 }
 
 // ---------------------------------------------------------------------------

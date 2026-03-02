@@ -683,9 +683,19 @@
 		fetch(`/api/chats/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
 	}
 
+	// session ID of the currently-running (or recently-completed) AI request.
+	// Stored so the stop button can cancel it server-side and so reconnect
+	// logic can resume from the right offset.
+	let chatSessionId = $state<string | null>(null);
+
 	function stopChat() {
 		chatAbortController?.abort();
 		chatAbortController = null;
+		// Cancel server-side so the agent loop exits rather than running orphaned.
+		if (chatSessionId) {
+			fetch(`/api/ai/agent/${chatSessionId}`, { method: 'DELETE' }).catch(() => {});
+			chatSessionId = null;
+		}
 	}
 
 	function continueChat() {
@@ -707,35 +717,18 @@
 		chatLoading = true;
 		const controller = new AbortController();
 		chatAbortController = controller;
-		try {
-			const reqBody: Record<string, unknown> = {
-				...settings.ai,
-				messages: chatThreads[tidx].messages,
-				mode: chatInteractionMode,
-				rootPath,
-			};
-			if (chatUseContext && activeTab && activeTabPath !== TERM_TAB && activeTabPath !== CHAT_TAB) {
-				reqBody.contextFile = { name: activeTab.name, content: activeTab.content.slice(0, 8000) };
-			}
 
-			const res = await fetch('/api/ai/agent', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(reqBody),
-				signal: controller.signal,
-			});
+		// Shared state across the initial fetch and any reconnect attempts.
+		let msgIdx: number | null = null;   // index of the current assistant message
+		let gotDone = false;                // true once a 'done' event was received
+		let receivedCount = 0;             // next expected event index (for resume)
 
-			if (!res.ok) {
-				const msg = await res.text().catch(() => `HTTP ${res.status}`);
-				chatThreads[tidx].messages = [...chatThreads[tidx].messages, { role: 'assistant', content: msg, error: true }];
-				return;
-			}
-
-			const reader = res.body!.getReader();
+		// Read an SSE response body, updating chatThreads reactively.
+		// Persists msgIdx / gotDone / receivedCount across calls for reconnects.
+		const readStream = async (response: Response) => {
+			const reader = response.body!.getReader();
 			const decoder = new TextDecoder();
 			let buf = '';
-			let msgIdx: number | null = null;
-
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) break;
@@ -743,6 +736,12 @@
 				const lines = buf.split('\n');
 				buf = lines.pop() ?? '';
 				for (const line of lines) {
+					// Track event index so we know where to resume from.
+					if (line.startsWith('id: ')) {
+						const id = parseInt(line.slice(4));
+						if (!isNaN(id)) receivedCount = id + 1;
+						continue;
+					}
 					if (!line.startsWith('data: ')) continue;
 					try {
 						const ev = JSON.parse(line.slice(6)) as { type: string; [k: string]: unknown };
@@ -802,28 +801,77 @@
 								}
 								break;
 							case 'done':
+								gotDone = true;
 								break;
 						}
 					} catch { /* malformed event */ }
 				}
 			}
+		};
+
+		try {
+			const reqBody: Record<string, unknown> = {
+				...settings.ai,
+				messages: chatThreads[tidx].messages,
+				mode: chatInteractionMode,
+				rootPath,
+			};
+			if (chatUseContext && activeTab && activeTabPath !== TERM_TAB && activeTabPath !== CHAT_TAB) {
+				reqBody.contextFile = { name: activeTab.name, content: activeTab.content.slice(0, 8000) };
+			}
+
+			const res = await fetch('/api/ai/agent', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(reqBody),
+				signal: controller.signal,
+			});
+
+			if (!res.ok) {
+				const msg = await res.text().catch(() => `HTTP ${res.status}`);
+				chatThreads[tidx].messages = [...chatThreads[tidx].messages, { role: 'assistant', content: msg, error: true }];
+				return;
+			}
+
+			chatSessionId = res.headers.get('x-session-id');
+			await readStream(res);
+
+			// If we didn't receive 'done', try to reconnect and resume.
+			if (!gotDone && chatSessionId) {
+				let retryDelay = 1500;
+				for (let attempt = 0; attempt < 6 && !gotDone; attempt++) {
+					await new Promise(r => setTimeout(r, retryDelay));
+					retryDelay = Math.min(retryDelay * 2, 10_000);
+					try {
+						const res2 = await fetch(
+							`/api/ai/agent/stream/${chatSessionId}?from=${receivedCount}`,
+							{ signal: controller.signal }
+						);
+						if (!res2.ok) break; // session expired / server restarted
+						await readStream(res2);
+					} catch (err2) {
+						if ((err2 as DOMException).name === 'AbortError') throw err2; // propagate stop
+						// else continue retrying
+					}
+				}
+			}
+
 		} catch (err) {
 			if ((err as DOMException).name === 'AbortError') {
-				// User pressed stop — don't add an error message, just finish cleanly.
+				// User pressed stop — server-side cancel is handled by stopChat().
 			} else {
 				chatThreads[tidx].messages = [...chatThreads[tidx].messages, {
 					role: 'assistant', content: (err as Error).message, error: true,
 				}];
 			}
 		} finally {
+			chatSessionId = null;
 			chatAbortController = null;
 			chatLoading = false;
 			saveChatThreads();
 			// Auto-send any message that was queued while we were busy.
 			// Use setTimeout(0) to defer past the current synchronous tick so Svelte
 			// can process chatLoading = false before sendChat sets it back to true.
-			// Without this, the $effect timer never resets and the new request can
-			// stall because the stream reader hasn't fully cleaned up yet.
 			if (queuedChat) {
 				const q = queuedChat;
 				queuedChat = null;

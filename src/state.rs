@@ -1,8 +1,66 @@
-use std::{collections::HashSet, env, path::PathBuf, sync::Arc};
-use tokio::sync::RwLock;
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    path::PathBuf,
+    sync::{atomic::{AtomicBool, Ordering}, Arc},
+};
+use tokio::sync::{watch, RwLock};
 use tracing::info;
 
 use crate::mcp::{external, BUILTIN_MCP_TOOLS};
+
+// ---------------------------------------------------------------------------
+// Agent session – shared between the agent task and streaming clients
+// ---------------------------------------------------------------------------
+
+/// Buffered state for a single agent run.  Lives in AppState.sessions so that
+/// the SSE stream can be resumed after a client reconnect without restarting
+/// the AI generation.
+#[derive(Debug)]
+pub struct AgentSession {
+    /// Every SSE line ever sent (indexed, e.g. `"id: 3\ndata: {...}\n\n"`).
+    pub events: std::sync::Mutex<Vec<String>>,
+    /// Set to `true` once the agent has finished (Done / Error emitted).
+    pub done: AtomicBool,
+    /// Set to `true` by a DELETE request – stops the agent at the next
+    /// safe cancellation point.
+    pub cancelled: AtomicBool,
+    /// Value = number of buffered events (or `usize::MAX` when done).
+    /// Clients subscribe to be notified of new events.
+    pub notify: watch::Sender<usize>,
+}
+
+impl AgentSession {
+    pub fn new() -> Arc<Self> {
+        let (notify, _) = watch::channel(0usize);
+        Arc::new(Self {
+            events: std::sync::Mutex::new(Vec::new()),
+            done: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            notify,
+        })
+    }
+
+    /// Buffer an SSE line and wake watchers.  Returns `false` if cancelled.
+    pub fn push(&self, line: String) -> bool {
+        if self.cancelled.load(Ordering::Relaxed) { return false; }
+        let mut events = self.events.lock().unwrap();
+        let idx = events.len();
+        events.push(line);
+        let _ = self.notify.send_replace(idx + 1);
+        true
+    }
+
+    /// Mark as done and send the sentinel value so cleanup/stream tasks wake up.
+    pub fn finish(&self) {
+        self.done.store(true, Ordering::Release);
+        let _ = self.notify.send_replace(usize::MAX);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Application state
+// ---------------------------------------------------------------------------
 
 /// Immutable server configuration derived from the environment at startup.
 #[derive(Clone, Debug)]
@@ -22,6 +80,9 @@ pub struct AppState {
     /// Directory used for all persistent nixium data (chats, etc.).
     /// Resolved from: $NIXIUM_DATA_DIR > $XDG_CONFIG_HOME/nixium > ~/.config/nixium
     pub data_dir: PathBuf,
+    /// Live agent sessions keyed by session ID.  Each session buffers all SSE
+    /// events so clients can resume after a network interruption.
+    pub sessions: Arc<tokio::sync::Mutex<HashMap<String, Arc<AgentSession>>>>,
 }
 
 impl AppState {
@@ -58,7 +119,14 @@ impl AppState {
             ..Default::default()
         }));
 
-        Self { prefix, mcp_enabled, no_tools_models: Arc::new(RwLock::new(HashSet::new())), external_mcp, data_dir }
+        Self {
+            prefix,
+            mcp_enabled,
+            no_tools_models: Arc::new(RwLock::new(HashSet::new())),
+            external_mcp,
+            data_dir,
+            sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        }
     }
 
     /// Resolve a client-supplied path to an absolute [`PathBuf`] on the host.
